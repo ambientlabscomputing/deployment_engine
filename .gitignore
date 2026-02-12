@@ -14,9 +14,6 @@ coverage.txt
 *.swp
 *.swo
 
-# Dependencies
-go.sum
-
 # Environment
 .env
 .env.local
