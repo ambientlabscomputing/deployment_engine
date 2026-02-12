@@ -1,0 +1,26 @@
+# Binaries
+bin/
+*.out
+*.exe
+
+# Test artifacts
+*.test
+coverage.txt
+.coverage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependencies
+go.sum
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
