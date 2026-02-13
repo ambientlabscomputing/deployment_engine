@@ -1,5 +1,4 @@
 package compiler
-package compiler
 
 import (
 	"fmt"
@@ -7,101 +6,120 @@ import (
 	"github.com/ambientlabscomputing/deployment_engine/internal/deployment"
 )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-}	return nil	}		}			}				return fmt.Errorf("service %s references unknown network %s", svc.Name, netName)			if _, exists := g.Networks[netName]; !exists {		for _, netName := range svc.Networks {	for _, svc := range g.Services {	// Check that all referenced networks existfunc (g *CompiledGraph) Validate() error {// Validate checks if the graph is valid}	return graph, nil	}		}			Networks:    svcSpec.Networks,			VolumeMounts: svcSpec.Volumes,			Ports:       svcSpec.Ports,			Environment: svcSpec.Environment,			Image:       svcSpec.Image,			Name:        name,		graph.Services[name] = &ServiceNode{	for name, svcSpec := range spec.Services {	// Add services to graph	}		}			Driver: volSpec.Driver,			Name:   volSpec.Name,		graph.Volumes[name] = &VolumeNode{	for name, volSpec := range spec.Volumes {	// Add volumes to graph	}		}			Driver: netSpec.Driver,			Name:   netSpec.Name,		graph.Networks[name] = &NetworkNode{	for name, netSpec := range spec.Networks {	// Add networks to graph	}		Volumes:      make(map[string]*VolumeNode),		Networks:     make(map[string]*NetworkNode),		Services:     make(map[string]*ServiceNode),		Slug:         spec.Slug,		Version:      spec.Version,		DeploymentID: spec.ID,	graph := &CompiledGraph{func (c *Compiler) Compile(spec *deployment.DeploymentSpec) (*CompiledGraph, error) {// Compile transforms a deployment spec into a dependency graph}	return &Compiler{}func NewCompiler() *Compiler {// NewCompiler creates a new compiler}type Compiler struct {// Compiler transforms deployment specs into compiled graphs}	Driver string	Name   stringtype VolumeNode struct {// VolumeNode represents a volume in the graph}	Driver string	Name   stringtype NetworkNode struct {// NetworkNode represents a network in the graph}	DependsOn   []string	Networks    []string	VolumeMounts []string	Ports       []string	Environment map[string]string	Image       string	Name        stringtype ServiceNode struct {// ServiceNode represents a service in the graph}	Volumes      map[string]*VolumeNode	Networks     map[string]*NetworkNode	Services     map[string]*ServiceNode	Slug         string	Version      int	DeploymentID stringtype CompiledGraph struct {// CompiledGraph represents the dependency graph of deployment resources
+// Compiler transforms deployment specs into executable graphs
+type Compiler struct{}
+
+// NewCompiler creates a new compiler instance
+func NewCompiler() *Compiler {
+	return &Compiler{}
+}
+
+// CompiledGraph represents a compiled deployment graph ready for execution
+type CompiledGraph struct {
+	DeploymentID string                     `json:"deployment_id"`
+	Version      string                     `json:"version"`
+	Slug         string                     `json:"slug"`
+	Services     map[string]*ServiceNode    `json:"services"`
+	Networks     map[string]*NetworkNode    `json:"networks"`
+	Volumes      map[string]*VolumeNode     `json:"volumes"`
+}
+
+// ServiceNode represents a service in the compiled graph
+type ServiceNode struct {
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	Environment  map[string]string `json:"environment,omitempty"`
+	Ports        []string          `json:"ports,omitempty"`
+	VolumeMounts []string          `json:"volume_mounts,omitempty"`
+	Networks     []string          `json:"networks,omitempty"`
+	DependsOn    []string          `json:"depends_on,omitempty"`
+}
+
+// NetworkNode represents a network in the compiled graph
+type NetworkNode struct {
+	Name   string `json:"name"`
+	Driver string `json:"driver"`
+}
+
+// VolumeNode represents a volume in the compiled graph
+type VolumeNode struct {
+	Name   string `json:"name"`
+	Driver string `json:"driver"`
+}
+
+// Compile transforms a deployment spec into a compiled graph
+func (c *Compiler) Compile(spec *deployment.DeploymentSpec) (*CompiledGraph, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("deployment spec is nil")
+	}
+
+	if spec.ID == "" {
+		return nil, fmt.Errorf("deployment spec missing ID")
+	}
+
+	graph := &CompiledGraph{
+		DeploymentID: spec.ID,
+		Version:      spec.Version,
+		Slug:         spec.Slug,
+		Services:     make(map[string]*ServiceNode),
+		Networks:     make(map[string]*NetworkNode),
+		Volumes:      make(map[string]*VolumeNode),
+	}
+
+	// Compile services
+	for name, svc := range spec.Services {
+		graph.Services[name] = &ServiceNode{
+			Name:         name,
+			Image:        svc.Image,
+			Environment:  svc.Environment,
+			Ports:        svc.Ports,
+			VolumeMounts: svc.Volumes,
+			Networks:     svc.Networks,
+		}
+	}
+
+	// Compile networks
+	for name, net := range spec.Networks {
+		graph.Networks[name] = &NetworkNode{
+			Name:   net.Name,
+			Driver: net.Driver,
+		}
+	}
+
+	// Compile volumes
+	for name, vol := range spec.Volumes {
+		graph.Volumes[name] = &VolumeNode{
+			Name:   vol.Name,
+			Driver: vol.Driver,
+		}
+	}
+
+	return graph, nil
+}
+
+// Validate checks a compiled graph for consistency errors
+func (g *CompiledGraph) Validate() error {
+	if g.DeploymentID == "" {
+		return fmt.Errorf("compiled graph missing deployment ID")
+	}
+
+	if len(g.Services) == 0 {
+		return fmt.Errorf("compiled graph has no services")
+	}
+
+	// Validate service references
+	for name, svc := range g.Services {
+		if svc.Image == "" {
+			return fmt.Errorf("service %s has no image", name)
+		}
+
+		// Validate network references
+		for _, netName := range svc.Networks {
+			if _, ok := g.Networks[netName]; !ok {
+				return fmt.Errorf("service %s references unknown network %s", name, netName)
+			}
+		}
+	}
+
+	return nil
+}

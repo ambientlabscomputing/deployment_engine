@@ -1,8 +1,9 @@
 package recipe
-package recipe
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 )
@@ -21,27 +22,31 @@ func NewReconciler(mmaBaseURL string, logger *slog.Logger) *Reconciler {
 	}
 }
 
+// ResolveRecipe fetches and resolves a recipe from the MMA
+func (r *Reconciler) ResolveRecipe(recipeID string, variables map[string]string) (map[string]interface{}, error) {
+	r.logger.Info("resolving recipe", "id", recipeID)
 
+	url := fmt.Sprintf("%s/api/v1/recipes/%s", r.mmaBaseURL, recipeID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch recipe %s: %w", recipeID, err)
+	}
+	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("recipe %s returned status %d", recipeID, resp.StatusCode)
+	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read recipe response: %w", err)
+	}
 
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse recipe %s: %w", recipeID, err)
+	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-}	return nil, fmt.Errorf("not implemented")	)		"mma", r.mmaBaseURL,		"recipe_id", recipeID,	r.logger.Info("resolved recipe",	// TODO: Decode response and apply variable substitution	}		return nil, fmt.Errorf("MMA returned status %d", resp.StatusCode)	if resp.StatusCode != http.StatusOK {	defer resp.Body.Close()	}		return nil, fmt.Errorf("failed to fetch recipe from MMA: %w", err)	if err != nil {	resp, err := http.Get(url)	url := fmt.Sprintf("%s/api/recipes/%s", r.mmaBaseURL, recipeID)	// Call MMA API to fetch recipefunc (r *Reconciler) ResolveRecipe(recipeID string, variables map[string]interface{}) (map[string]interface{}, error) {// ResolveRecipe fetches a recipe from MMA and applies variable substitution
+	r.logger.Info("recipe resolved", "id", recipeID)
+	return result, nil
+}
