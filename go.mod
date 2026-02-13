@@ -3,7 +3,7 @@ module github.com/ambientlabscomputing/deployment_engine
 go 1.24.0
 
 require (
-	github.com/ambientlabscomputing/umc_sdk v0.0.0
+	github.com/ambientlabscomputing/umc_sdk v0.1.1
 	google.golang.org/grpc v1.78.0
 	google.golang.org/protobuf v1.36.11
 )
