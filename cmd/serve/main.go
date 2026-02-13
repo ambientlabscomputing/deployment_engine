@@ -57,8 +57,13 @@ func main() {
 	apiHandler := api.NewHandler(syscallClient, logger)
 	apiHandler.SetSupervisor(sup)
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "10081"
+	}
+
 	httpServer := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":" + port,
 		Handler:      apiHandler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
