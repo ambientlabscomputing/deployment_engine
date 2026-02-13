@@ -1,0 +1,92 @@
+name: Development Release
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  dev-release:
+    name: Create Development Release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.3'
+
+    - name: Get short SHA
+      id: sha
+      run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+    - name: Build binaries
+      env:
+        VERSION: dev-${{ steps.sha.outputs.short }}
+        GOPRIVATE: github.com/ambientlabscomputing/umc_sdk
+      run: |
+        mkdir -p bin
+        
+        # Linux AMD64
+        GOOS=linux GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o bin/deployment_engine-linux-amd64 ./cmd/serve
+        
+        # Linux ARM64
+        GOOS=linux GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o bin/deployment_engine-linux-arm64 ./cmd/serve
+        
+        # macOS AMD64
+        GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o bin/deployment_engine-darwin-amd64 ./cmd/serve
+        
+        # macOS ARM64 (M1/M2/M3)
+        GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o bin/deployment_engine-darwin-arm64 ./cmd/serve
+
+    - name: Generate checksums
+      run: |
+        cd bin
+        sha256sum * > checksums.txt
+        cat checksums.txt
+
+    - name: Delete existing dev release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release delete dev --yes || true
+        git push origin :refs/tags/dev || true
+        sleep 5
+
+    - name: Create Development Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: dev
+        name: Development Build (Latest)
+        prerelease: true
+        files: bin/*
+        body: |
+          # Deployment Engine - Development Build
+          
+          **⚠️ This is an automated development build from the `develop` branch**
+          
+          - **Commit**: ${{ github.sha }}
+          - **Built**: ${{ github.event.head_commit.timestamp }}
+          - **Version**: dev-${{ steps.sha.outputs.short }}
+          
+          ## Platforms
+          
+          - **Linux AMD64**: `deployment_engine-linux-amd64`
+          - **Linux ARM64**: `deployment_engine-linux-arm64`
+          - **macOS AMD64**: `deployment_engine-darwin-amd64`
+          - **macOS ARM64**: `deployment_engine-darwin-arm64`
+          
+          ## Verification
+          
+          Verify checksums with:
+          ```bash
+          sha256sum -c checksums.txt
+          ```
