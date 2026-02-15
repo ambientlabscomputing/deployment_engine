@@ -2,7 +2,11 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,16 +16,29 @@ import (
 	"time"
 )
 
+// RestartPolicy defines how a UMC should be restarted on failure
+type RestartPolicy string
+
+const (
+	RestartPolicyAlways    RestartPolicy = "always"
+	RestartPolicyOnFailure RestartPolicy = "on-failure"
+	RestartPolicyNever     RestartPolicy = "never"
+)
+
 // UMCProcess represents a managed Underleaf Micro-Component process
 type UMCProcess struct {
-	ID       string
-	Name     string
-	Command  *exec.Cmd
-	PID      int
-	Port     int
-	Running  bool
-	mu       sync.Mutex
-	stopChan chan struct{}
+	ID             string
+	Name           string
+	Command        *exec.Cmd
+	PID            int
+	Port           int
+	Running        bool
+	RestartPolicy  RestartPolicy
+	RestartCount   int
+	LastRestartAt  time.Time
+	BackoffSeconds int
+	mu             sync.Mutex
+	stopChan       chan struct{}
 }
 
 // SupervisorConfig holds configuration for the supervisor
@@ -91,17 +108,27 @@ func (s *Supervisor) StartUMC(ctx context.Context, umcName string, port int) err
 	}
 
 	proc := &UMCProcess{
-		ID:       umcName,
-		Name:     umcName,
-		Command:  cmd,
-		PID:      cmd.Process.Pid,
-		Port:     port,
-		Running:  true,
-		stopChan: make(chan struct{}),
+		ID:             umcName,
+		Name:           umcName,
+		Command:        cmd,
+		PID:            cmd.Process.Pid,
+		Port:           port,
+		Running:        true,
+		RestartPolicy:  RestartPolicyAlways, // Default to always restart
+		BackoffSeconds: 1,                   // Initial backoff
+		stopChan:       make(chan struct{}),
 	}
 
 	s.processes[umcName] = proc
 	s.logger.Info("UMC started", "name", umcName, "pid", cmd.Process.Pid)
+
+	// Write PID file for cron-engine so parent UA can track it for cleanup
+	if umcName == "cron-engine" {
+		pidFile := "/tmp/cron_engine.pid"
+		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+			s.logger.Warn("failed to write cron engine PID file", "error", err)
+		}
+	}
 
 	// Monitor process health
 	s.wg.Add(1)
@@ -237,6 +264,159 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// RestartUMC stops and restarts a managed UMC
+func (s *Supervisor) RestartUMC(ctx context.Context, umcName string) error {
+	s.mu.RLock()
+	proc, exists := s.processes[umcName]
+	s.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("UMC not found: %s", umcName)
+	}
+
+	if !proc.Running {
+		return fmt.Errorf("UMC is not running: %s", umcName)
+	}
+
+	s.logger.Info("Restarting UMC", "name", umcName)
+
+	// Stop the UMC
+	if err := s.StopUMC(ctx, umcName); err != nil {
+		return fmt.Errorf("failed to stop UMC: %w", err)
+	}
+
+	// Small delay to ensure clean port release
+	time.Sleep(500 * time.Millisecond)
+
+	// Start it again with the same configuration
+	return s.StartUMC(ctx, umcName, proc.Port)
+}
+
+// SetRestartPolicy updates the restart policy for a managed UMC
+func (s *Supervisor) SetRestartPolicy(umcName string, policy RestartPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	proc, exists := s.processes[umcName]
+	if !exists {
+		return fmt.Errorf("UMC not found: %s", umcName)
+	}
+
+	proc.RestartPolicy = policy
+	s.logger.Info("Updated restart policy", "name", umcName, "policy", policy)
+	return nil
+}
+
+// InstallUMC downloads and installs a UMC binary from a URL
+func (s *Supervisor) InstallUMC(umcName, artifactURL, checksum string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	binDir := filepath.Join(homeDir, ".underleaf", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("failed to create bin directory: %w", err)
+	}
+
+	exeName := umcName + "-serve"
+	targetPath := filepath.Join(binDir, exeName)
+	tempPath := targetPath + ".tmp"
+
+	s.logger.Info("Downloading UMC binary", "name", umcName, "url", artifactURL)
+
+	// Download the binary
+	resp, err := http.Get(artifactURL)
+	if err != nil {
+		return fmt.Errorf("failed to download binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status: %s", resp.Status)
+	}
+
+	// Create temp file
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tempPath)
+
+	// Copy and compute checksum if provided
+	var hash hash.Hash
+	var writer io.Writer = tempFile
+	if checksum != "" {
+		hash = sha256.New()
+		writer = io.MultiWriter(tempFile, hash)
+	}
+
+	if _, err := io.Copy(writer, resp.Body); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to write binary: %w", err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Verify checksum
+	if checksum != "" {
+		actualChecksum := hex.EncodeToString(hash.Sum(nil))
+		if actualChecksum != checksum {
+			return fmt.Errorf("checksum mismatch: expected %s, got %s", checksum, actualChecksum)
+		}
+		s.logger.Info("Checksum verified", "name", umcName, "checksum", checksum)
+	}
+
+	// Make executable
+	if err := os.Chmod(tempPath, 0755); err != nil {
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	// Atomic move (rename on same filesystem, copy+delete otherwise)
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		// Try copy if rename fails (cross-device link)
+		if os.IsPermission(err) || os.IsExist(err) {
+			return fmt.Errorf("failed to install binary: %w", err)
+		}
+		// Cross-device, do a copy
+		if err := s.copyFile(tempPath, targetPath); err != nil {
+			return fmt.Errorf("failed to install binary: %w", err)
+		}
+	}
+
+	s.logger.Info("UMC binary installed successfully", "name", umcName, "path", targetPath)
+	return nil
+}
+
+// copyFile copies a file from src to dst (for cross-device installs)
+func (s *Supervisor) copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return err
+	}
+
+	// Preserve permissions
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	return os.Chmod(dst, srcInfo.Mode())
+}
+
 // findExecutable locates the UMC binary
 func (s *Supervisor) findExecutable(umcName string) string {
 	homeDir, _ := os.UserHomeDir()
@@ -280,7 +460,7 @@ func (s *Supervisor) checkHealth(proc *UMCProcess) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// monitorUMC monitors a UMC process
+// monitorUMC monitors a UMC process and handles restarts
 func (s *Supervisor) monitorUMC(umcName string, proc *UMCProcess) {
 	defer s.wg.Done()
 
@@ -292,12 +472,20 @@ func (s *Supervisor) monitorUMC(umcName string, proc *UMCProcess) {
 		}
 
 		// Wait for process to finish
-		if err := proc.Command.Wait(); err != nil {
-			s.logger.Warn("UMC process exited", "name", umcName, "error", err)
+		exitErr := proc.Command.Wait()
+		exitCode := 0
+		if exitErr != nil {
+			if exitError, ok := exitErr.(*exec.ExitError); ok {
+				exitCode = exitError.ExitCode()
+			}
+			s.logger.Warn("UMC process exited", "name", umcName, "exit_code", exitCode, "error", exitErr)
+		} else {
+			s.logger.Info("UMC process exited cleanly", "name", umcName)
 		}
 
 		proc.mu.Lock()
 		proc.Running = false
+		restartPolicy := proc.RestartPolicy
 		proc.mu.Unlock()
 
 		// Don't restart if supervisor is shutting down
@@ -307,8 +495,87 @@ func (s *Supervisor) monitorUMC(umcName string, proc *UMCProcess) {
 		default:
 		}
 
-		// Log that the process has stopped
-		s.logger.Info("UMC process monitor stopping", "name", umcName)
-		break
+		// Determine if we should restart
+		shouldRestart := false
+		switch restartPolicy {
+		case RestartPolicyAlways:
+			shouldRestart = true
+		case RestartPolicyOnFailure:
+			shouldRestart = (exitCode != 0)
+		case RestartPolicyNever:
+			shouldRestart = false
+		}
+
+		if !shouldRestart {
+			s.logger.Info("UMC not restarting per policy", "name", umcName, "policy", restartPolicy)
+			return
+		}
+
+		// Increment restart count and calculate backoff
+		proc.mu.Lock()
+		proc.RestartCount++
+		restartCount := proc.RestartCount
+
+		// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
+		backoff := time.Duration(proc.BackoffSeconds) * time.Second
+		if backoff > 60*time.Second {
+			backoff = 60 * time.Second
+		} else {
+			proc.BackoffSeconds *= 2
+			if proc.BackoffSeconds > 60 {
+				proc.BackoffSeconds = 60
+			}
+		}
+
+		// Reset backoff if healthy for 5 minutes
+		if !proc.LastRestartAt.IsZero() && time.Since(proc.LastRestartAt) > 5*time.Minute {
+			proc.BackoffSeconds = 1
+			backoff = time.Second
+		}
+
+		proc.LastRestartAt = time.Now()
+		proc.mu.Unlock()
+
+		s.logger.Info("UMC restarting after backoff",
+			"name", umcName,
+			"restart_count", restartCount,
+			"backoff_seconds", backoff.Seconds())
+
+		// Wait for backoff period
+		select {
+		case <-time.After(backoff):
+			// Continue to restart
+		case <-s.stopChan:
+			return
+		}
+
+		// Find executable again (in case it was updated)
+		exePath := s.findExecutable(umcName)
+		if exePath == "" {
+			s.logger.Error("UMC executable not found for restart", "name", umcName)
+			return
+		}
+
+		// Restart the process
+		cmd := exec.Command(exePath)
+		cmd.Env = append(os.Environ(),
+			"KERNEL_SOCKET="+s.config.KernelSocket,
+			"LOG_LEVEL="+s.config.LogLevel,
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Start(); err != nil {
+			s.logger.Error("failed to restart UMC", "name", umcName, "error", err)
+			return
+		}
+
+		proc.mu.Lock()
+		proc.Command = cmd
+		proc.PID = cmd.Process.Pid
+		proc.Running = true
+		proc.mu.Unlock()
+
+		s.logger.Info("UMC restarted successfully", "name", umcName, "pid", cmd.Process.Pid)
 	}
 }

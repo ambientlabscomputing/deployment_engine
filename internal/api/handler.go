@@ -75,6 +75,12 @@ func (h *Handler) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 		h.handleSupervisorUMCs(w, r)
 	case "/supervisor/umc/status":
 		h.handleSupervisorUMCStatus(w, r)
+	case "/supervisor/umc/restart":
+		h.handleSupervisorUMCRestart(w, r)
+	case "/supervisor/umc/install":
+		h.handleSupervisorUMCInstall(w, r)
+	case "/supervisor/umc/policy":
+		h.handleSupervisorUMCPolicy(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -219,5 +225,135 @@ func (h *Handler) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":    deploymentID,
 		"state": string(state),
+	})
+}
+
+// handleSupervisorUMCRestart handles POST requests to restart a UMC
+func (h *Handler) handleSupervisorUMCRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.supervisor.RestartUMC(r.Context(), req.Name); err != nil {
+		h.logger.Warn("failed to restart UMC", "name", req.Name, "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "restarted",
+		"name":   req.Name,
+	})
+}
+
+// handleSupervisorUMCInstall handles POST requests to install a UMC binary
+func (h *Handler) handleSupervisorUMCInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		ArtifactURL string `json:"artifact_url"`
+		Checksum    string `json:"checksum"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.ArtifactURL == "" {
+		http.Error(w, "artifact_url is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.supervisor.InstallUMC(req.Name, req.ArtifactURL, req.Checksum); err != nil {
+		h.logger.Warn("failed to install UMC", "name", req.Name, "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "installed",
+		"name":   req.Name,
+	})
+}
+
+// handleSupervisorUMCPolicy handles PUT requests to update a UMC's restart policy
+func (h *Handler) handleSupervisorUMCPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Name   string `json:"name"`
+		Policy string `json:"policy"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Policy == "" {
+		http.Error(w, "policy is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate policy value
+	var policy supervisor.RestartPolicy
+	switch req.Policy {
+	case "always":
+		policy = supervisor.RestartPolicyAlways
+	case "on-failure":
+		policy = supervisor.RestartPolicyOnFailure
+	case "never":
+		policy = supervisor.RestartPolicyNever
+	default:
+		http.Error(w, "invalid policy: must be 'always', 'on-failure', or 'never'", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.supervisor.SetRestartPolicy(req.Name, policy); err != nil {
+		h.logger.Warn("failed to set restart policy", "name", req.Name, "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "updated",
+		"name":   req.Name,
+		"policy": req.Policy,
 	})
 }

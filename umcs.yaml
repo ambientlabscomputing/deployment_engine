@@ -1,0 +1,8 @@
+# UMC Manifest
+# Defines which Underleaf Micro-Components (UMCs) should be managed by the deployment engine
+
+umcs:
+  # Cron Engine - schedules and executes recurring deployment tasks
+  - name: cron-engine
+    port: 8081
+    restart_policy: always  # Options: always, on-failure, never

@@ -11,12 +11,12 @@ import (
 
 // DeploymentSpec represents a full deployment specification
 type DeploymentSpec struct {
-	ID       string                    `json:"id"`
-	Slug     string                    `json:"slug"`
-	Version  string                    `json:"version"`
-	Services map[string]ServiceSpec    `json:"services"`
-	Networks map[string]NetworkSpec    `json:"networks,omitempty"`
-	Volumes  map[string]VolumeSpec     `json:"volumes,omitempty"`
+	ID       string                 `json:"id"`
+	Slug     string                 `json:"slug"`
+	Version  string                 `json:"version"`
+	Services map[string]ServiceSpec `json:"services"`
+	Networks map[string]NetworkSpec `json:"networks,omitempty"`
+	Volumes  map[string]VolumeSpec  `json:"volumes,omitempty"`
 }
 
 // ServiceSpec defines a service within a deployment

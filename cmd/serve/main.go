@@ -4,16 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ambientlabscomputing/deployment_engine/internal/api"
+	"github.com/ambientlabscomputing/deployment_engine/internal/manifest"
 	"github.com/ambientlabscomputing/deployment_engine/internal/supervisor"
 	"github.com/ambientlabscomputing/deployment_engine/internal/syscall"
 	"github.com/ambientlabscomputing/umc_sdk/lifecycle"
 	"github.com/ambientlabscomputing/umc_sdk/logging"
+	"github.com/ambientlabscomputing/umc_sdk/transport"
 	"google.golang.org/grpc"
 )
 
@@ -107,14 +109,36 @@ func (c *SupervisorComponent) Name() string {
 func (c *SupervisorComponent) Start(ctx context.Context) error {
 	c.logger.Info("supervisor component starting")
 
-	// Auto-start cron engine if configured
-	if os.Getenv("AUTO_START_CRON_ENGINE") == "true" {
-		if err := c.supervisor.StartUMC(ctx, "cron-engine", 8081); err != nil {
-			c.logger.Warn("failed to auto-start cron engine", "error", err)
-			// Don't fail startup if cron engine fails
-		} else {
-			c.logger.Info("cron engine auto-started via supervisor")
+	// Load UMC manifest (default to ./umcs.yaml or from UMCS_MANIFEST env var)
+	manifestPath := os.Getenv("UMCS_MANIFEST")
+	if manifestPath == "" {
+		// Try current directory, then executable directory
+		cwd, _ := os.Getwd()
+		manifestPath = filepath.Join(cwd, "umcs.yaml")
+		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+			exePath, _ := os.Executable()
+			manifestPath = filepath.Join(filepath.Dir(exePath), "umcs.yaml")
 		}
+	}
+
+	// Load manifest if it exists
+	if _, err := os.Stat(manifestPath); err == nil {
+		c.logger.Info("loading UMC manifest", "path", manifestPath)
+		m, err := manifest.Parse(manifestPath)
+		if err != nil {
+			c.logger.Warn("failed to parse UMC manifest, skipping auto-start", "error", err)
+		} else {
+			// Start all UMCs defined in the manifest
+			for _, umc := range m.UMCs {
+				c.logger.Info("auto-starting UMC from manifest", "name", umc.Name, "port", umc.Port, "restart_policy", umc.RestartPolicy)
+				if err := c.supervisor.StartUMC(ctx, umc.Name, umc.Port); err != nil {
+					c.logger.Warn("failed to auto-start UMC", "name", umc.Name, "error", err)
+					// Continue starting other UMCs even if one fails
+				}
+			}
+		}
+	} else {
+		c.logger.Info("no UMC manifest found, skipping auto-start", "expected_path", manifestPath)
 	}
 
 	return nil
@@ -149,25 +173,14 @@ func (c *HTTPServerComponent) Stop(ctx context.Context) error {
 	return c.server.Shutdown(ctx)
 }
 
-// dialKernelSyscallServer attempts to connect to the UA kernel syscall server
+// dialKernelSyscallServer connects to the UA kernel syscall server via Unix domain socket
 func dialKernelSyscallServer(timeout time.Duration) (*grpc.ClientConn, error) {
 	socketPath := os.Getenv("KERNEL_SOCKET")
 	if socketPath == "" {
 		socketPath = "/tmp/ua_kernel.sock"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	dialer := net.Dialer{}
-	conn, err := grpc.DialContext(
-		ctx,
-		"unix:"+socketPath,
-		grpc.WithInsecure(),
-		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "unix", socketPath)
-		}),
-	)
+	conn, err := transport.UDSDialer(socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial kernel syscall server at %s: %w", socketPath, err)
 	}

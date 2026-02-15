@@ -1,27 +1,35 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/ambientlabscomputing/deployment_engine/internal/deployment"
+	"github.com/ambientlabscomputing/deployment_engine/internal/syscall"
 )
 
 // Compiler transforms deployment specs into executable graphs
-type Compiler struct{}
+type Compiler struct {
+	syscallClient *syscall.Client
+}
 
 // NewCompiler creates a new compiler instance
-func NewCompiler() *Compiler {
-	return &Compiler{}
+func NewCompiler(syscallClient *syscall.Client) *Compiler {
+	return &Compiler{
+		syscallClient: syscallClient,
+	}
 }
 
 // CompiledGraph represents a compiled deployment graph ready for execution
 type CompiledGraph struct {
-	DeploymentID string                     `json:"deployment_id"`
-	Version      string                     `json:"version"`
-	Slug         string                     `json:"slug"`
-	Services     map[string]*ServiceNode    `json:"services"`
-	Networks     map[string]*NetworkNode    `json:"networks"`
-	Volumes      map[string]*VolumeNode     `json:"volumes"`
+	DeploymentID string                  `json:"deployment_id"`
+	Version      string                  `json:"version"`
+	Slug         string                  `json:"slug"`
+	Services     map[string]*ServiceNode `json:"services"`
+	Networks     map[string]*NetworkNode `json:"networks"`
+	Volumes      map[string]*VolumeNode  `json:"volumes"`
 }
 
 // ServiceNode represents a service in the compiled graph
@@ -68,10 +76,16 @@ func (c *Compiler) Compile(spec *deployment.DeploymentSpec) (*CompiledGraph, err
 
 	// Compile services
 	for name, svc := range spec.Services {
+		// Resolve secrets in environment variables
+		resolvedEnv, err := c.resolveSecrets(context.Background(), svc.Environment)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve secrets for service %s: %w", name, err)
+		}
+
 		graph.Services[name] = &ServiceNode{
 			Name:         name,
 			Image:        svc.Image,
-			Environment:  svc.Environment,
+			Environment:  resolvedEnv,
 			Ports:        svc.Ports,
 			VolumeMounts: svc.Volumes,
 			Networks:     svc.Networks,
@@ -122,4 +136,47 @@ func (g *CompiledGraph) Validate() error {
 	}
 
 	return nil
+}
+
+var secretPattern = regexp.MustCompile(`\$\{secret:([a-zA-Z0-9_\-\.\/]+)\}`)
+
+// resolveSecrets replaces ${secret:key} placeholders with actual secret values
+func (c *Compiler) resolveSecrets(ctx context.Context, env map[string]string) (map[string]string, error) {
+	if c.syscallClient == nil {
+		// No syscall client available, return environment as-is
+		return env, nil
+	}
+
+	resolved := make(map[string]string, len(env))
+	for key, value := range env {
+		// Check if value contains secret reference
+		if !strings.Contains(value, "${secret:") {
+			resolved[key] = value
+			continue
+		}
+
+		// Replace all secret references in the value
+		resolvedValue := secretPattern.ReplaceAllStringFunc(value, func(match string) string {
+			// Extract secret key from ${secret:key}
+			submatch := secretPattern.FindStringSubmatch(match)
+			if len(submatch) < 2 {
+				return match // Keep original if pattern doesn't match
+			}
+			secretKey := submatch[1]
+
+			// Fetch secret from kernel
+			secretValue, err := c.syscallClient.GetSecret(ctx, secretKey)
+			if err != nil {
+				// Log error but don't fail - return placeholder for now
+				// TODO: Consider making this a hard failure in production
+				return match
+			}
+
+			return string(secretValue)
+		})
+
+		resolved[key] = resolvedValue
+	}
+
+	return resolved, nil
 }
