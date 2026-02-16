@@ -86,6 +86,12 @@ func main() {
 		logger: logger,
 	})
 
+	// Add event subscriber component (subscribes to deployment events)
+	launcher.Add(&EventSubscriberComponent{
+		syscallClient: syscallClient,
+		logger:        logger,
+	})
+
 	// Create runtime for signal handling
 	runtime := lifecycle.NewRuntime(launcher)
 
@@ -171,6 +177,78 @@ func (c *HTTPServerComponent) Start(ctx context.Context) error {
 
 func (c *HTTPServerComponent) Stop(ctx context.Context) error {
 	return c.server.Shutdown(ctx)
+}
+
+// EventSubscriberComponent implements lifecycle.Component for event subscription
+type EventSubscriberComponent struct {
+	syscallClient *syscall.Client
+	logger        *slog.Logger
+	stopChan      chan struct{}
+}
+
+func (c *EventSubscriberComponent) Name() string {
+	return "event-subscriber"
+}
+
+func (c *EventSubscriberComponent) Start(ctx context.Context) error {
+	c.logger.Info("event subscriber component starting")
+	c.stopChan = make(chan struct{})
+
+	// Start event subscription in background goroutine
+	go func() {
+		for {
+			select {
+			case <-c.stopChan:
+				c.logger.Info("event subscriber stopping")
+				return
+			default:
+				// Subscribe to deployment events
+				stream, err := c.syscallClient.SubscribeDeploymentEvents(ctx)
+				if err != nil {
+					c.logger.Error("failed to subscribe to events", "error", err)
+					time.Sleep(5 * time.Second) // Wait before retry
+					continue
+				}
+
+				// Read events from stream
+				for {
+					select {
+					case <-c.stopChan:
+						c.logger.Info("event subscriber stopping")
+						return
+					default:
+						event, err := stream.Recv()
+						if err != nil {
+							c.logger.Warn("event stream error, reconnecting", "error", err)
+							time.Sleep(2 * time.Second)
+							break // Break inner loop to reconnect
+						}
+
+						// Log received event
+						c.logger.Info("received deployment event",
+							"event_id", event.EventId,
+							"event_type", event.EventType,
+							"entity_kind", event.EntityKind,
+							"entity_id", event.EntityId,
+							"emitted_at", event.EmittedAt.AsTime())
+
+						// TODO: Process event (e.g., trigger deployment actions)
+						// For now, just logging is sufficient for wiring
+					}
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (c *EventSubscriberComponent) Stop(ctx context.Context) error {
+	c.logger.Info("event subscriber component stopping")
+	if c.stopChan != nil {
+		close(c.stopChan)
+	}
+	return nil
 }
 
 // dialKernelSyscallServer connects to the UA kernel syscall server via Unix domain socket
