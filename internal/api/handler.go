@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -191,7 +190,7 @@ func (h *Handler) handleCreateDeployment(w http.ResponseWriter, r *http.Request)
 
 	// Emit deployment event
 	if err := h.syscallClient.EmitDeploymentEvent(
-		context.Background(),
+		r.Context(),
 		"deployment.created",
 		req.ID,
 		req.Spec,
@@ -215,7 +214,7 @@ func (h *Handler) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := h.syscallClient.GetDeploymentState(context.Background(), deploymentID)
+	state, err := h.syscallClient.GetDeploymentState(r.Context(), deploymentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
