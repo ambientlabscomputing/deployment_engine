@@ -1,9 +1,9 @@
 module github.com/ambientlabscomputing/deployment_engine
 
-go 1.24.0
+go 1.25.5
 
 require (
-	github.com/ambientlabscomputing/umc_sdk v0.1.2
+	github.com/ambientlabscomputing/umc_sdk v0.1.3
 	github.com/moby/moby/api v1.53.0
 	github.com/moby/moby/client v0.2.2
 	google.golang.org/grpc v1.78.0
@@ -13,6 +13,9 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/ambientlabscomputing/mycelium_spine v1.0.1 // indirect
+	github.com/ambientlabscomputing/mycelium_spine/sdk v1.0.2 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
@@ -21,6 +24,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/lmittmann/tint v1.0.6 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/natefinch/lumberjack v2.0.0+incompatible // indirect
@@ -28,11 +32,11 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
-	go.opentelemetry.io/otel v1.38.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
+	go.opentelemetry.io/otel v1.40.0 // indirect
+	go.opentelemetry.io/otel/metric v1.40.0 // indirect
+	go.opentelemetry.io/otel/trace v1.40.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 )
