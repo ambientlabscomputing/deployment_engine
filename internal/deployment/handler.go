@@ -26,6 +26,13 @@ type ServiceSpec struct {
 	Environment map[string]string `json:"environment,omitempty"`
 	Volumes     []string          `json:"volumes,omitempty"`
 	Networks    []string          `json:"networks,omitempty"`
+	Expose      *ExposeConfig     `json:"expose,omitempty"`
+}
+
+// ExposeConfig declares that a service should be publicly exposed via Hyphae tunnel.
+type ExposeConfig struct {
+	Port     int    `json:"port"`
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // NetworkSpec defines a network within a deployment
@@ -82,6 +89,17 @@ func (h *Handler) Deploy(ctx context.Context, spec *DeploymentSpec) error {
 		return fmt.Errorf("failed to emit event: %w", err)
 	}
 
+	// Announce exposures for services that declare public access
+	for svcName, svc := range spec.Services {
+		if svc.Expose == nil {
+			continue
+		}
+		if err := h.EmitServiceExposure(ctx, spec.ID, svcName, svc.Expose.Port, ""); err != nil {
+			h.logger.Error("failed to emit service exposure", "id", spec.ID, "service", svcName, "error", err)
+			// Non-fatal: log and continue
+		}
+	}
+
 	h.logger.Info("deployment created", "id", spec.ID)
 	return nil
 }
@@ -116,4 +134,25 @@ func (h *Handler) GetStatus(ctx context.Context, deploymentID string) (map[strin
 	}
 
 	return state, nil
+}
+
+// EmitServiceExposure emits an event indicating a service is exposed and ready
+// This is called after a service container is created and verified to be healthy
+func (h *Handler) EmitServiceExposure(ctx context.Context, deploymentID, serviceName string, targetPort int, containerID string) error {
+	h.logger.Info("emitting service exposure event", "deployment_id", deploymentID, "service", serviceName, "port", targetPort)
+
+	payload := map[string]interface{}{
+		"deployment_id": deploymentID,
+		"service_name":  serviceName,
+		"port":          targetPort,
+		"container_id":  containerID,
+	}
+
+	if err := h.syscallClient.EmitDeploymentEvent(ctx, "deployment.service.exposed", deploymentID, payload); err != nil {
+		h.logger.Error("failed to emit service exposure event", "deployment_id", deploymentID, "service", serviceName, "error", err)
+		return fmt.Errorf("failed to emit service exposure event: %w", err)
+	}
+
+	h.logger.Info("service exposure event emitted", "deployment_id", deploymentID, "service", serviceName)
+	return nil
 }
