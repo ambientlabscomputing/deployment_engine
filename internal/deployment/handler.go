@@ -9,11 +9,28 @@ import (
 	"github.com/ambientlabscomputing/deployment_engine/internal/syscall"
 )
 
+// BuildConfig describes how to build a Docker image from source.
+type BuildConfig struct {
+	Context    string            `json:"context,omitempty"`    // path relative to repo root (default ".")
+	Dockerfile string            `json:"dockerfile,omitempty"` // default "Dockerfile"
+	Args       map[string]string `json:"args,omitempty"`
+}
+
+// SourceRef carries the resolved source coordinates for a GitHub-sourced deployment.
+type SourceRef struct {
+	Type       string `json:"type"` // currently always "github"
+	Owner      string `json:"owner"`
+	Repo       string `json:"repo"`
+	Ref        string `json:"ref"`         // branch, tag, or commit SHA
+	ArchiveURL string `json:"archive_url"` // tarball download URL
+}
+
 // DeploymentSpec represents a full deployment specification
 type DeploymentSpec struct {
 	ID       string                 `json:"id"`
 	Slug     string                 `json:"slug"`
 	Version  string                 `json:"version"`
+	Source   *SourceRef             `json:"source,omitempty"`
 	Services map[string]ServiceSpec `json:"services"`
 	Networks map[string]NetworkSpec `json:"networks,omitempty"`
 	Volumes  map[string]VolumeSpec  `json:"volumes,omitempty"`
@@ -21,7 +38,8 @@ type DeploymentSpec struct {
 
 // ServiceSpec defines a service within a deployment
 type ServiceSpec struct {
-	Image       string            `json:"image"`
+	Image       string            `json:"image,omitempty"`
+	Build       *BuildConfig      `json:"build,omitempty"`
 	Ports       []string          `json:"ports,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 	Volumes     []string          `json:"volumes,omitempty"`

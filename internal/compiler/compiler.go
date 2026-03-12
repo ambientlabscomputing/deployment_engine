@@ -34,13 +34,15 @@ type CompiledGraph struct {
 
 // ServiceNode represents a service in the compiled graph
 type ServiceNode struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	Environment  map[string]string `json:"environment,omitempty"`
-	Ports        []string          `json:"ports,omitempty"`
-	VolumeMounts []string          `json:"volume_mounts,omitempty"`
-	Networks     []string          `json:"networks,omitempty"`
-	DependsOn    []string          `json:"depends_on,omitempty"`
+	Name         string                  `json:"name"`
+	Image        string                  `json:"image,omitempty"`
+	Build        *deployment.BuildConfig `json:"build,omitempty"`
+	Source       *deployment.SourceRef   `json:"source,omitempty"`
+	Environment  map[string]string       `json:"environment,omitempty"`
+	Ports        []string                `json:"ports,omitempty"`
+	VolumeMounts []string                `json:"volume_mounts,omitempty"`
+	Networks     []string                `json:"networks,omitempty"`
+	DependsOn    []string                `json:"depends_on,omitempty"`
 }
 
 // NetworkNode represents a network in the compiled graph
@@ -85,6 +87,8 @@ func (c *Compiler) Compile(spec *deployment.DeploymentSpec) (*CompiledGraph, err
 		graph.Services[name] = &ServiceNode{
 			Name:         name,
 			Image:        svc.Image,
+			Build:        svc.Build,
+			Source:       spec.Source,
 			Environment:  resolvedEnv,
 			Ports:        svc.Ports,
 			VolumeMounts: svc.Volumes,
@@ -123,8 +127,8 @@ func (g *CompiledGraph) Validate() error {
 
 	// Validate service references
 	for name, svc := range g.Services {
-		if svc.Image == "" {
-			return fmt.Errorf("service %s has no image", name)
+		if svc.Image == "" && svc.Build == nil {
+			return fmt.Errorf("service %s has no image and no build config", name)
 		}
 
 		// Validate network references
