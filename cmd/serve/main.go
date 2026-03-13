@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"github.com/ambientlabscomputing/deployment_engine/internal/api"
+	"github.com/ambientlabscomputing/deployment_engine/internal/compiler"
+	"github.com/ambientlabscomputing/deployment_engine/internal/deployment"
 	"github.com/ambientlabscomputing/deployment_engine/internal/manifest"
+	"github.com/ambientlabscomputing/deployment_engine/internal/runner"
 	"github.com/ambientlabscomputing/deployment_engine/internal/supervisor"
 	"github.com/ambientlabscomputing/deployment_engine/internal/syscall"
 	"github.com/ambientlabscomputing/umc_sdk/lifecycle"
@@ -194,6 +198,51 @@ func (c *EventSubscriberComponent) Name() string {
 	return "event-subscriber"
 }
 
+// deploymentEventPayload mirrors the Spine envelope payload from server_api.
+type deploymentEventPayload struct {
+	JobID      string                `json:"job_id"`
+	Deployment deploymentFromPayload `json:"deployment"`
+}
+
+// deploymentFromPayload is a lightweight representation of the AppDeployment
+// that arrives via Spine. Fields are mapped to the deployment engine's own types.
+type deploymentFromPayload struct {
+	ID       string                `json:"id"`
+	Name     string                `json:"name"`
+	Slug     string                `json:"slug"`
+	Version  int                   `json:"version"`
+	Source   *deployment.SourceRef `json:"source,omitempty"`
+	Services []serviceFromPayload  `json:"services"`
+	Networks []networkFromPayload  `json:"networks"`
+	Volumes  []volumeFromPayload   `json:"volumes"`
+}
+
+type serviceFromPayload struct {
+	Name        string                  `json:"name"`
+	Image       string                  `json:"image,omitempty"`
+	Build       *deployment.BuildConfig `json:"build,omitempty"`
+	Environment map[string]string       `json:"environment,omitempty"`
+	Ports       []string                `json:"ports,omitempty"`
+	Volumes     []string                `json:"volumes,omitempty"`
+	Networks    []string                `json:"networks,omitempty"`
+	Expose      *exposeFromPayload      `json:"expose,omitempty"`
+}
+
+type networkFromPayload struct {
+	Name   string `json:"name"`
+	Driver string `json:"driver,omitempty"`
+}
+
+type volumeFromPayload struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+}
+
+type exposeFromPayload struct {
+	Port     int    `json:"port"`
+	Hostname string `json:"hostname,omitempty"`
+}
+
 func (c *EventSubscriberComponent) Start(ctx context.Context) error {
 	c.logger.Info("event subscriber component starting")
 	c.stopChan = make(chan struct{})
@@ -228,16 +277,21 @@ func (c *EventSubscriberComponent) Start(ctx context.Context) error {
 							break // Break inner loop to reconnect
 						}
 
-						// Log received event
 						c.logger.Info("received deployment event",
 							"event_id", event.EventId,
 							"event_type", event.EventType,
 							"entity_kind", event.EntityKind,
 							"entity_id", event.EntityId,
-							"emitted_at", event.EmittedAt.AsTime())
+						)
 
-						// TODO: Process event (e.g., trigger deployment actions)
-						// For now, just logging is sufficient for wiring
+						if event.EventType == "deployments.apply.server.request" {
+							payloadBytes, err := json.Marshal(event.Payload.AsMap())
+							if err != nil {
+								c.logger.Error("failed to marshal event payload", "error", err)
+								continue
+							}
+							go c.processDeployment(ctx, payloadBytes)
+						}
 					}
 				}
 			}
@@ -245,6 +299,83 @@ func (c *EventSubscriberComponent) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// processDeployment handles a deployments.apply.server.request event.
+func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payload []byte) {
+	var ep deploymentEventPayload
+	if err := json.Unmarshal(payload, &ep); err != nil {
+		c.logger.Error("failed to parse deployment event payload", "error", err)
+		return
+	}
+
+	dep := ep.Deployment
+	c.logger.Info("processing deployment",
+		"job_id", ep.JobID,
+		"deployment_id", dep.ID,
+		"slug", dep.Slug,
+		"services", len(dep.Services),
+	)
+
+	// Convert payload services to DeploymentSpec
+	services := make(map[string]deployment.ServiceSpec, len(dep.Services))
+	for _, svc := range dep.Services {
+		var expose *deployment.ExposeConfig
+		if svc.Expose != nil {
+			expose = &deployment.ExposeConfig{
+				Port:     svc.Expose.Port,
+				Hostname: svc.Expose.Hostname,
+			}
+		}
+		services[svc.Name] = deployment.ServiceSpec{
+			Image:       svc.Image,
+			Build:       svc.Build,
+			Ports:       svc.Ports,
+			Environment: svc.Environment,
+			Volumes:     svc.Volumes,
+			Networks:    svc.Networks,
+			Expose:      expose,
+		}
+	}
+
+	spec := &deployment.DeploymentSpec{
+		ID:       dep.ID,
+		Slug:     dep.Slug,
+		Version:  fmt.Sprintf("%d", dep.Version),
+		Source:   dep.Source,
+		Services: services,
+	}
+
+	// Compile
+	comp := compiler.NewCompiler(c.syscallClient)
+	graph, err := comp.Compile(spec)
+	if err != nil {
+		c.logger.Error("compilation failed", "deployment_id", dep.ID, "error", err)
+		return
+	}
+
+	// Execute
+	r, err := runner.NewRunner(c.logger)
+	if err != nil {
+		c.logger.Error("failed to create runner", "deployment_id", dep.ID, "error", err)
+		return
+	}
+
+	result, err := r.Execute(ctx, graph)
+	if err != nil {
+		c.logger.Error("deployment execution failed",
+			"deployment_id", dep.ID,
+			"job_id", ep.JobID,
+			"error", err,
+		)
+		return
+	}
+
+	c.logger.Info("deployment completed",
+		"deployment_id", dep.ID,
+		"job_id", ep.JobID,
+		"status", result.Status,
+	)
 }
 
 func (c *EventSubscriberComponent) Stop(ctx context.Context) error {

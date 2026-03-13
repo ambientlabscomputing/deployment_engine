@@ -17,6 +17,7 @@ import (
 
 	"github.com/ambientlabscomputing/deployment_engine/internal/compiler"
 	mobycontainer "github.com/moby/moby/api/types/container"
+	mobynetwork "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
 
@@ -69,7 +70,8 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 
 	// Execute services in topological order
 	for name, svc := range graph.Services {
-		r.logger.Info("deploying service", "name", name, "image", svc.Image)
+		containerName := fmt.Sprintf("%s-%s", graph.Slug, name)
+		r.logger.Info("deploying service", "name", name, "container", containerName, "image", svc.Image)
 
 		imageRef := svc.Image
 
@@ -121,18 +123,42 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 			env = append(env, fmt.Sprintf("%s=%s", k, v))
 		}
 
+		// Parse port mappings (format: "hostPort:containerPort")
+		exposedPorts := make(mobynetwork.PortSet)
+		portBindings := make(mobynetwork.PortMap)
+		for _, portSpec := range svc.Ports {
+			parts := strings.SplitN(portSpec, ":", 2)
+			if len(parts) == 2 {
+				hostPort := parts[0]
+				containerPort, err := mobynetwork.ParsePort(parts[1] + "/tcp")
+				if err != nil {
+					r.logger.Warn("invalid port spec, skipping", "port", portSpec, "error", err)
+					continue
+				}
+				exposedPorts[containerPort] = struct{}{}
+				portBindings[containerPort] = []mobynetwork.PortBinding{{HostPort: hostPort}}
+			}
+		}
+
+		// Remove any existing container with the same name (idempotent redeploy)
+		_, _ = r.dockerClient.ContainerRemove(ctx, containerName, client.ContainerRemoveOptions{Force: true})
+
 		// Create container
-		r.logger.Debug("creating container", "name", name)
+		r.logger.Debug("creating container", "name", containerName)
 		resp, err := r.dockerClient.ContainerCreate(ctx, client.ContainerCreateOptions{
-			Name: name,
+			Name: containerName,
 			Config: &mobycontainer.Config{
-				Image: imageRef,
-				Env:   env,
+				Image:        imageRef,
+				Env:          env,
+				ExposedPorts: exposedPorts,
+			},
+			HostConfig: &mobycontainer.HostConfig{
+				PortBindings: portBindings,
 			},
 		})
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to create container %s: %v", name, err)
-			r.logger.Error("container creation failed", "name", name, "error", err)
+			errMsg := fmt.Sprintf("failed to create container %s: %v", containerName, err)
+			r.logger.Error("container creation failed", "name", containerName, "error", err)
 			result.Output[name] = map[string]interface{}{
 				"image":  imageRef,
 				"status": "failed",
@@ -144,11 +170,11 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 		}
 
 		// Start container
-		r.logger.Debug("starting container", "name", name, "container_id", resp.ID)
+		r.logger.Debug("starting container", "name", containerName, "container_id", resp.ID)
 		_, err = r.dockerClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{})
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to start container %s: %v", name, err)
-			r.logger.Error("container start failed", "name", name, "container_id", resp.ID, "error", err)
+			errMsg := fmt.Sprintf("failed to start container %s: %v", containerName, err)
+			r.logger.Error("container start failed", "name", containerName, "container_id", resp.ID, "error", err)
 			result.Output[name] = map[string]interface{}{
 				"image":        imageRef,
 				"container_id": resp.ID,
@@ -204,6 +230,10 @@ func (r *Runner) buildImage(ctx context.Context, slug, serviceName string, svc *
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
 	}
+	if svc.Source.Token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+svc.Source.Token)
+	}
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {

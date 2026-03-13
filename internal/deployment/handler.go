@@ -21,8 +21,9 @@ type SourceRef struct {
 	Type       string `json:"type"` // currently always "github"
 	Owner      string `json:"owner"`
 	Repo       string `json:"repo"`
-	Ref        string `json:"ref"`         // branch, tag, or commit SHA
-	ArchiveURL string `json:"archive_url"` // tarball download URL
+	Ref        string `json:"ref"`             // branch, tag, or commit SHA
+	ArchiveURL string `json:"archive_url"`     // tarball download URL
+	Token      string `json:"token,omitempty"` // GitHub PAT for private repos
 }
 
 // DeploymentSpec represents a full deployment specification
