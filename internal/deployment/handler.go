@@ -16,14 +16,16 @@ type BuildConfig struct {
 	Args       map[string]string `json:"args,omitempty"`
 }
 
-// SourceRef carries the resolved source coordinates for a GitHub-sourced deployment.
+// SourceRef carries the resolved source coordinates for a deployment.
+// Type is either "github" or "local".
 type SourceRef struct {
-	Type       string `json:"type"` // currently always "github"
-	Owner      string `json:"owner"`
-	Repo       string `json:"repo"`
-	Ref        string `json:"ref"`             // branch, tag, or commit SHA
-	ArchiveURL string `json:"archive_url"`     // tarball download URL
-	Token      string `json:"token,omitempty"` // GitHub PAT for private repos
+	Type       string `json:"type"`                 // "github" or "local"
+	Owner      string `json:"owner,omitempty"`      // github only
+	Repo       string `json:"repo,omitempty"`       // github only
+	Ref        string `json:"ref,omitempty"`        // branch, tag, or commit SHA (github); optional label (local)
+	LocalPath  string `json:"local_path,omitempty"` // informational; local only
+	ArchiveURL string `json:"archive_url"`          // tarball download URL
+	Token      string `json:"token,omitempty"`      // GitHub PAT for private repos (github only)
 }
 
 // DeploymentSpec represents a full deployment specification

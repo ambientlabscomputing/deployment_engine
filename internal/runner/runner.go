@@ -218,7 +218,11 @@ func (r *Runner) buildImage(ctx context.Context, slug, serviceName string, svc *
 		}
 	}
 
-	imageTag := fmt.Sprintf("%s/%s:%s", slug, serviceName, svc.Source.Ref)
+	ref := svc.Source.Ref
+	if ref == "" {
+		ref = "local"
+	}
+	imageTag := fmt.Sprintf("%s/%s:%s", slug, serviceName, ref)
 
 	r.logger.Info("downloading source archive",
 		"url", svc.Source.ArchiveURL,
@@ -230,10 +234,12 @@ func (r *Runner) buildImage(ctx context.Context, slug, serviceName string, svc *
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
 	}
-	if svc.Source.Token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+svc.Source.Token)
+	if svc.Source.Type == "github" || svc.Source.Type == "" {
+		if svc.Source.Token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+svc.Source.Token)
+		}
+		httpReq.Header.Set("Accept", "application/vnd.github+json")
 	}
-	httpReq.Header.Set("Accept", "application/vnd.github+json")
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
