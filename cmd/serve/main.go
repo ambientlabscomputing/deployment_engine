@@ -351,6 +351,7 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 	graph, err := comp.Compile(spec)
 	if err != nil {
 		c.logger.Error("compilation failed", "deployment_id", dep.ID, "error", err)
+		c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, false, fmt.Sprintf("compilation failed: %v", err), "")
 		return
 	}
 
@@ -358,6 +359,7 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 	r, err := runner.NewRunner(c.logger)
 	if err != nil {
 		c.logger.Error("failed to create runner", "deployment_id", dep.ID, "error", err)
+		c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, false, fmt.Sprintf("failed to create runner: %v", err), "")
 		return
 	}
 
@@ -368,6 +370,8 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 			"job_id", ep.JobID,
 			"error", err,
 		)
+		// Emit failure result so the agent can report it to server_api
+		c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, false, err.Error(), "")
 		return
 	}
 
@@ -376,6 +380,30 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 		"job_id", ep.JobID,
 		"status", result.Status,
 	)
+
+	// Emit result event so the agent can report it to server_api
+	success := result.Status == "success"
+	c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, success, result.Error, "")
+}
+
+// emitDeploymentResult emits a deployments.result event through the kernel so the
+// agent can forward it to server_api and complete the FSM transition.
+func (c *EventSubscriberComponent) emitDeploymentResult(ctx context.Context, jobID, deploymentID string, version int, success bool, errMsg, output string) {
+	resultPayload := map[string]interface{}{
+		"job_id":        jobID,
+		"deployment_id": deploymentID,
+		"version":       version,
+		"success":       success,
+		"error":         errMsg,
+		"output":        output,
+	}
+	if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.result", deploymentID, resultPayload); err != nil {
+		c.logger.Error("failed to emit deployment result event",
+			"deployment_id", deploymentID,
+			"job_id", jobID,
+			"error", err,
+		)
+	}
 }
 
 func (c *EventSubscriberComponent) Stop(ctx context.Context) error {
