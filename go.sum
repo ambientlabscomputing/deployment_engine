@@ -4,10 +4,10 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/ambientlabscomputing/mycelium_spine v1.0.2 h1:hkv34fMfrueydh40tc/yofMNnvYmkBew934vD+Q6GDg=
 github.com/ambientlabscomputing/mycelium_spine v1.0.2/go.mod h1:KghCzDjXO5tUy1qK7q7U/JKip9LQkscdaBIqDYvaI2I=
-github.com/ambientlabscomputing/mycelium_spine/sdk v1.1.0 h1:PT/aqdqJ0zuFBmILsKvNiISEYM4jPlOcICN70D+byn4=
-github.com/ambientlabscomputing/mycelium_spine/sdk v1.1.0/go.mod h1:15x1OXCqWefNC0NLolAOs75EmwpNCAvG6945D2UcacE=
-github.com/ambientlabscomputing/umc_sdk v0.1.4 h1:c4ZuwiX0m2M3HuHMPZyF+/VveDuwu2zhqbOb+M+nR5c=
-github.com/ambientlabscomputing/umc_sdk v0.1.4/go.mod h1:bJ+iUXTgBqFlrNtAm6wGnpwsMOTvuGpCQRzqENBUKgc=
+github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.0-rc.2 h1:ThBjijOOlamhkdqULAVe3Vt7h2UkNXKWznUev5Ru+js=
+github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.0-rc.2/go.mod h1:15x1OXCqWefNC0NLolAOs75EmwpNCAvG6945D2UcacE=
+github.com/ambientlabscomputing/umc_sdk v0.1.5-rc.1 h1:ZI4/yVab/gG5zdUY8ykg0DR4PUscpVQKx6twQFjXjMw=
+github.com/ambientlabscomputing/umc_sdk v0.1.5-rc.1/go.mod h1:YCNSptVfS85fNedKHGgEZcacP0dnhEC3e8cGkjNtUmE=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
