@@ -382,7 +382,7 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 	)
 
 	// Emit result event so the agent can report it to server_api
-	success := result.Status == "success"
+	success := result.Status == "completed"
 	c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, success, result.Error, "")
 }
 
