@@ -3,18 +3,18 @@ module github.com/ambientlabscomputing/deployment_engine
 go 1.25.5
 
 require (
-	github.com/ambientlabscomputing/umc_sdk v0.1.5-rc.1
+	github.com/ambientlabscomputing/umc_sdk v0.1.7
 	github.com/moby/moby/api v1.53.0
 	github.com/moby/moby/client v0.2.2
-	google.golang.org/grpc v1.78.0
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ambientlabscomputing/mycelium_spine v1.0.2 // indirect
-	github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.0-rc.2 // indirect
+	github.com/ambientlabscomputing/mycelium_spine v1.2.1 // indirect
+	github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -25,7 +25,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/lmittmann/tint v1.0.6 // indirect
+	github.com/lmittmann/tint v1.1.3 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/natefinch/lumberjack v2.0.0+incompatible // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
