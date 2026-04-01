@@ -31,7 +31,7 @@ jobs:
     - name: Build binaries
       env:
         VERSION: dev-${{ steps.sha.outputs.short }}
-        GOPRIVATE: github.com/ambientlabscomputing/umc_sdk
+        GOPRIVATE: github.com/ambientlabscomputing/*
       run: |
         mkdir -p bin
         

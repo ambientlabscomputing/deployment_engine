@@ -27,7 +27,7 @@ jobs:
     - name: Build binaries
       env:
         VERSION: ${{ github.ref_name }}
-        GOPRIVATE: github.com/ambientlabscomputing/umc_sdk
+        GOPRIVATE: github.com/ambientlabscomputing/*
       run: |
         mkdir -p bin
         

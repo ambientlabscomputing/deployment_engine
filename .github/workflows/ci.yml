@@ -10,6 +10,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/ambientlabscomputing/*
     
     steps:
     - name: Checkout code
@@ -32,8 +34,6 @@ jobs:
 
     - name: Download dependencies
       run: go mod download
-      env:
-        GOPRIVATE: github.com/ambientlabscomputing/umc_sdk
 
     - name: Verify dependencies
       run: go mod verify
