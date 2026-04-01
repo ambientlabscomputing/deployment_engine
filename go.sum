@@ -2,7 +2,7 @@ github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/ambientlabscomputing/mycelium_spine v1.2.1 h1:22gnheXYliVPI+z9BGUqbku4KQAuyPDZSt90gFwT1io=
+github.com/ambientlabscomputing/mycelium_spine v1.2.1 h1:n/Or+nJ+HLbVk8m2LbmRNtVMxS3OB9TKzH4y2fpWJmM=
 github.com/ambientlabscomputing/mycelium_spine v1.2.1/go.mod h1:AqAFY4OV9IvTh9Rvsy9y2nGEgNJsS7ICj5Cmc7FjLtI=
 github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.1 h1:aYoVAgdnqJitnr/8J94iyTZ/PcPFHY71zVx+BujXAmw=
 github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.1/go.mod h1:xFspftghZFF3gObFBnkvwWS421XWa3tNCCtFhiNWs7w=
