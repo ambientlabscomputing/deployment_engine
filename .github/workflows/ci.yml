@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOPRIVATE: github.com/ambientlabscomputing/*
+      GONOSUMCHECK: github.com/ambientlabscomputing/*
     
     steps:
     - name: Checkout code

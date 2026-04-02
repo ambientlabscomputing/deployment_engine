@@ -32,6 +32,7 @@ jobs:
       env:
         VERSION: dev-${{ steps.sha.outputs.short }}
         GOPRIVATE: github.com/ambientlabscomputing/*
+        GONOSUMCHECK: github.com/ambientlabscomputing/*
       run: |
         mkdir -p bin
         

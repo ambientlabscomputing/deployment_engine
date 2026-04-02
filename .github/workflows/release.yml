@@ -28,6 +28,7 @@ jobs:
       env:
         VERSION: ${{ github.ref_name }}
         GOPRIVATE: github.com/ambientlabscomputing/*
+        GONOSUMCHECK: github.com/ambientlabscomputing/*
       run: |
         mkdir -p bin
         
