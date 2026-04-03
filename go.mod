@@ -3,7 +3,7 @@ module github.com/ambientlabscomputing/deployment_engine
 go 1.25.5
 
 require (
-	github.com/ambientlabscomputing/umc_sdk v0.1.7
+	github.com/ambientlabscomputing/umc_sdk v0.1.9
 	github.com/moby/moby/api v1.53.0
 	github.com/moby/moby/client v0.2.2
 	google.golang.org/grpc v1.79.3
@@ -13,8 +13,8 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ambientlabscomputing/mycelium_spine v1.2.1 // indirect
-	github.com/ambientlabscomputing/mycelium_spine/sdk v1.2.1 // indirect
+	github.com/ambientlabscomputing/mycelium_spine v1.3.0 // indirect
+	github.com/ambientlabscomputing/mycelium_spine/sdk v1.3.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
