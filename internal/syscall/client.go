@@ -66,6 +66,7 @@ func (c *Client) SubscribeDeploymentEvents(ctx context.Context) (pb.EventService
 	req := &pb.SubscribeLocalRequest{
 		EventTypeFilter: []string{
 			"deployments.apply.server.request",
+			"deployments.delete.server.request",
 			"deployment.created",
 			"deployment.updated",
 			"deployment.deleted",

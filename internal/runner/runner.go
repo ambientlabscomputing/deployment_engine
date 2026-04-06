@@ -151,6 +151,11 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 				Image:        imageRef,
 				Env:          env,
 				ExposedPorts: exposedPorts,
+				Labels: map[string]string{
+					"underleaf.deployment_id": graph.DeploymentID,
+					"underleaf.slug":          graph.Slug,
+					"underleaf.service":       name,
+				},
 			},
 			HostConfig: &mobycontainer.HostConfig{
 				PortBindings: portBindings,
@@ -405,11 +410,12 @@ func extractTarGzStripped(r io.Reader, dst string) error {
 	return nil
 }
 
-// Stop stops a running deployment
-func (r *Runner) Stop(ctx context.Context, deploymentID string) error {
-	r.logger.Info("stopping deployment", "id", deploymentID)
+// Stop stops a running deployment by slug. Containers are matched by the
+// "underleaf.slug" label (set on new deploys) or by name prefix "<slug>-"
+// for containers created before labels were added.
+func (r *Runner) Stop(ctx context.Context, slug string) error {
+	r.logger.Info("stopping deployment", "slug", slug)
 
-	// List all containers
 	listResult, err := r.dockerClient.ContainerList(ctx, client.ContainerListOptions{
 		All: true,
 	})
@@ -417,41 +423,55 @@ func (r *Runner) Stop(ctx context.Context, deploymentID string) error {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// Stop and remove containers matching the deployment
-	var errors []error
+	namePrefix := slug + "-"
+	var errs []error
+	stopped := 0
 	for _, ctr := range listResult.Items {
-		// Check if container name or labels match this deployment
-		// For now, use simple name prefix matching
-		// TODO: Use proper labels when creating containers
-		for _, name := range ctr.Names {
-			if len(name) > 0 && name[0] == '/' {
-				name = name[1:] // Remove leading slash
-			}
-			// This is a simplified approach - in production, use labels
-			r.logger.Debug("stopping container", "id", ctr.ID, "name", name)
-
-			// Stop container (10 second timeout)
-			timeout := 10
-			_, stopErr := r.dockerClient.ContainerStop(ctx, ctr.ID, client.ContainerStopOptions{Timeout: &timeout})
-			if stopErr != nil {
-				r.logger.Warn("failed to stop container", "id", ctr.ID, "error", stopErr)
-				errors = append(errors, stopErr)
+		// Match by label first (preferred).
+		if ctr.Labels != nil {
+			if ctr.Labels["underleaf.slug"] == slug {
+				if stopErr := r.stopAndRemove(ctx, ctr.ID); stopErr != nil {
+					errs = append(errs, stopErr)
+				} else {
+					stopped++
+				}
 				continue
 			}
-
-			// Remove container
-			_, removeErr := r.dockerClient.ContainerRemove(ctx, ctr.ID, client.ContainerRemoveOptions{})
-			if removeErr != nil {
-				r.logger.Warn("failed to remove container", "id", ctr.ID, "error", removeErr)
-				errors = append(errors, removeErr)
+		}
+		// Fallback: match by container name prefix.
+		for _, n := range ctr.Names {
+			if len(n) > 0 && n[0] == '/' {
+				n = n[1:]
+			}
+			if strings.HasPrefix(n, namePrefix) {
+				if stopErr := r.stopAndRemove(ctx, ctr.ID); stopErr != nil {
+					errs = append(errs, stopErr)
+				} else {
+					stopped++
+				}
+				break
 			}
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("stopped deployment with errors: %v", errors)
+	if len(errs) > 0 {
+		return fmt.Errorf("stopped %d containers with %d errors: %v", stopped, len(errs), errs)
 	}
 
-	r.logger.Info("deployment stopped successfully", "id", deploymentID)
+	r.logger.Info("deployment stopped", "slug", slug, "containers", stopped)
+	return nil
+}
+
+func (r *Runner) stopAndRemove(ctx context.Context, containerID string) error {
+	timeout := 10
+	if _, err := r.dockerClient.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout}); err != nil {
+		r.logger.Warn("failed to stop container", "id", containerID, "error", err)
+		return err
+	}
+	if _, err := r.dockerClient.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{}); err != nil {
+		r.logger.Warn("failed to remove container", "id", containerID, "error", err)
+		return err
+	}
+	r.logger.Info("container stopped and removed", "id", containerID)
 	return nil
 }

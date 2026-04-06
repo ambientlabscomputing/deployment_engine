@@ -291,6 +291,13 @@ func (c *EventSubscriberComponent) Start(ctx context.Context) error {
 								continue
 							}
 							go c.processDeployment(ctx, payloadBytes)
+						} else if event.EventType == "deployments.delete.server.request" {
+							payloadBytes, err := json.Marshal(event.Payload.AsMap())
+							if err != nil {
+								c.logger.Error("failed to marshal delete event payload", "error", err)
+								continue
+							}
+							go c.processDeploymentDelete(ctx, payloadBytes)
 						}
 					}
 				}
@@ -384,6 +391,38 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 	// Emit result event so the agent can report it to server_api
 	success := result.Status == "completed"
 	c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, success, result.Error, "")
+}
+
+// processDeploymentDelete handles a deployments.delete.server.request event.
+// It stops and removes all containers that belong to the deployment.
+func (c *EventSubscriberComponent) processDeploymentDelete(ctx context.Context, payload []byte) {
+	var ep struct {
+		DeploymentID string `json:"deployment_id"`
+		Slug         string `json:"slug"`
+	}
+	if err := json.Unmarshal(payload, &ep); err != nil {
+		c.logger.Error("failed to parse delete event payload", "error", err)
+		return
+	}
+	if ep.Slug == "" {
+		c.logger.Error("delete event missing slug", "deployment_id", ep.DeploymentID)
+		return
+	}
+
+	c.logger.Info("processing deployment delete", "deployment_id", ep.DeploymentID, "slug", ep.Slug)
+
+	r, err := runner.NewRunner(c.logger)
+	if err != nil {
+		c.logger.Error("failed to create runner for delete", "error", err)
+		return
+	}
+
+	if err := r.Stop(ctx, ep.Slug); err != nil {
+		c.logger.Error("failed to stop deployment containers", "slug", ep.Slug, "error", err)
+		return
+	}
+
+	c.logger.Info("deployment containers stopped", "slug", ep.Slug)
 }
 
 // emitDeploymentResult emits a deployments.result event through the kernel so the
