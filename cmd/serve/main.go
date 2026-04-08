@@ -494,6 +494,7 @@ func (c *EventSubscriberComponent) processDeploymentDelete(ctx context.Context, 
 
 // emitDeploymentProgress emits a deployments.progress event through the kernel
 // so server_api can update the per-server instance FSM and log the stage.
+// Retries up to 3 times with exponential backoff on failure.
 func (c *EventSubscriberComponent) emitDeploymentProgress(ctx context.Context, jobID, deploymentID string, version int, stage, message string) {
 	progressPayload := map[string]interface{}{
 		"job_id":        jobID,
@@ -503,18 +504,32 @@ func (c *EventSubscriberComponent) emitDeploymentProgress(ctx context.Context, j
 		"message":       message,
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.progress", deploymentID, progressPayload); err != nil {
-		c.logger.Warn("failed to emit deployment progress event",
-			"deployment_id", deploymentID,
-			"job_id", jobID,
-			"stage", stage,
-			"error", err,
-		)
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
+		}
+		if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.progress", deploymentID, progressPayload); err != nil {
+			c.logger.Warn("failed to emit deployment progress event",
+				"deployment_id", deploymentID,
+				"job_id", jobID,
+				"stage", stage,
+				"attempt", attempt+1,
+				"error", err,
+			)
+			continue
+		}
+		return
 	}
+	c.logger.Error("deployment progress event lost after 3 attempts",
+		"deployment_id", deploymentID,
+		"job_id", jobID,
+		"stage", stage,
+	)
 }
 
 // emitDeploymentResult emits a deployments.result event through the kernel so the
 // agent can forward it to server_api and complete the FSM transition.
+// Retries up to 5 times with exponential backoff — result loss is critical.
 func (c *EventSubscriberComponent) emitDeploymentResult(ctx context.Context, jobID, deploymentID string, version int, success bool, errMsg, output string) {
 	resultPayload := map[string]interface{}{
 		"job_id":        jobID,
@@ -524,13 +539,26 @@ func (c *EventSubscriberComponent) emitDeploymentResult(ctx context.Context, job
 		"error":         errMsg,
 		"output":        output,
 	}
-	if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.result", deploymentID, resultPayload); err != nil {
-		c.logger.Error("failed to emit deployment result event",
-			"deployment_id", deploymentID,
-			"job_id", jobID,
-			"error", err,
-		)
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
+		}
+		if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.result", deploymentID, resultPayload); err != nil {
+			c.logger.Error("failed to emit deployment result event",
+				"deployment_id", deploymentID,
+				"job_id", jobID,
+				"attempt", attempt+1,
+				"error", err,
+			)
+			continue
+		}
+		return
 	}
+	c.logger.Error("CRITICAL: deployment result event lost after 5 attempts — deployment may be stuck",
+		"deployment_id", deploymentID,
+		"job_id", jobID,
+		"success", success,
+	)
 }
 
 func (c *EventSubscriberComponent) Stop(ctx context.Context) error {
