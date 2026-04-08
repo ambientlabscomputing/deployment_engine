@@ -49,6 +49,12 @@ func NewRunner(logger *slog.Logger) (*Runner, error) {
 	}, nil
 }
 
+// Ping verifies the Docker daemon is reachable. Returns an error if it is not.
+func (r *Runner) Ping(ctx context.Context) error {
+	_, err := r.dockerClient.Ping(ctx, client.PingOptions{})
+	return err
+}
+
 // Execute runs a compiled deployment graph
 func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*ExecutionResult, error) {
 	r.logger.Info("executing deployment", "id", graph.DeploymentID, "services", len(graph.Services))
@@ -159,6 +165,9 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 			},
 			HostConfig: &mobycontainer.HostConfig{
 				PortBindings: portBindings,
+				RestartPolicy: mobycontainer.RestartPolicy{
+					Name: mobycontainer.RestartPolicyUnlessStopped,
+				},
 			},
 		})
 		if err != nil {
@@ -474,4 +483,62 @@ func (r *Runner) stopAndRemove(ctx context.Context, containerID string) error {
 	}
 	r.logger.Info("container stopped and removed", "id", containerID)
 	return nil
+}
+
+// ReconcileContainers inspects all containers with the "underleaf.deployment_id"
+// label and restarts any that have exited. This is called at startup to recover
+// from host reboots, daemon restarts, or OOM kills.
+func (r *Runner) ReconcileContainers(ctx context.Context) (restarted int, errCount int) {
+	r.logger.Info("reconciling deployment containers")
+
+	listResult, err := r.dockerClient.ContainerList(ctx, client.ContainerListOptions{
+		All: true, // include stopped containers
+	})
+	if err != nil {
+		r.logger.Error("failed to list containers for reconciliation", "error", err)
+		return 0, 1
+	}
+
+	for _, ctr := range listResult.Items {
+		// Only manage containers that were created by the deployment engine.
+		if ctr.Labels == nil || ctr.Labels["underleaf.deployment_id"] == "" {
+			continue
+		}
+
+		if ctr.State == "running" {
+			continue
+		}
+
+		// Container is not running (exited, created, dead, etc.) — restart it.
+		containerName := ""
+		if len(ctr.Names) > 0 {
+			containerName = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+
+		r.logger.Warn("found stopped underleaf container, restarting",
+			"container_id", ctr.ID[:12],
+			"name", containerName,
+			"state", ctr.State,
+			"deployment_id", ctr.Labels["underleaf.deployment_id"],
+		)
+
+		if _, startErr := r.dockerClient.ContainerStart(ctx, ctr.ID, client.ContainerStartOptions{}); startErr != nil {
+			r.logger.Error("failed to restart container",
+				"container_id", ctr.ID[:12],
+				"name", containerName,
+				"error", startErr,
+			)
+			errCount++
+		} else {
+			r.logger.Info("container restarted successfully",
+				"container_id", ctr.ID[:12],
+				"name", containerName,
+				"deployment_id", ctr.Labels["underleaf.deployment_id"],
+			)
+			restarted++
+		}
+	}
+
+	r.logger.Info("container reconciliation complete", "restarted", restarted, "errors", errCount)
+	return restarted, errCount
 }

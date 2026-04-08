@@ -94,6 +94,12 @@ func main() {
 		logger: logger,
 	})
 
+	// Add container reconciliation component — restarts any stopped
+	// underleaf containers on startup (e.g. after host reboot or OOM).
+	launcher.Add(&ReconciliationComponent{
+		logger: logger,
+	})
+
 	// Add event subscriber component (subscribes to deployment events)
 	launcher.Add(&EventSubscriberComponent{
 		syscallClient: syscallClient,
@@ -185,6 +191,41 @@ func (c *HTTPServerComponent) Start(ctx context.Context) error {
 
 func (c *HTTPServerComponent) Stop(ctx context.Context) error {
 	return c.server.Shutdown(ctx)
+}
+
+// ReconciliationComponent restarts any stopped underleaf containers on startup.
+// This handles recovery from host reboots, Docker daemon restarts, or OOM kills
+// that happened while the deployment engine was not running.
+type ReconciliationComponent struct {
+	logger *slog.Logger
+}
+
+func (c *ReconciliationComponent) Name() string {
+	return "container-reconciliation"
+}
+
+func (c *ReconciliationComponent) Start(ctx context.Context) error {
+	c.logger.Info("running startup container reconciliation")
+
+	r, err := runner.NewRunner(c.logger)
+	if err != nil {
+		c.logger.Error("failed to create runner for reconciliation", "error", err)
+		return nil // Non-fatal: continue startup even if reconciliation fails
+	}
+
+	restarted, errCount := r.ReconcileContainers(ctx)
+	if errCount > 0 {
+		c.logger.Warn("container reconciliation completed with errors",
+			"restarted", restarted, "errors", errCount)
+	} else if restarted > 0 {
+		c.logger.Info("container reconciliation completed",
+			"restarted", restarted)
+	}
+	return nil
+}
+
+func (c *ReconciliationComponent) Stop(ctx context.Context) error {
+	return nil // Nothing to clean up
 }
 
 // EventSubscriberComponent implements lifecycle.Component for event subscription
@@ -370,6 +411,29 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 		return
 	}
 
+	// Pre-flight: verify Docker daemon is reachable before attempting to pull or build.
+	if pingErr := r.Ping(ctx); pingErr != nil {
+		c.logger.Error("docker daemon unreachable", "deployment_id", dep.ID, "error", pingErr)
+		c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, false, fmt.Sprintf("docker daemon unreachable: %v", pingErr), "")
+		return
+	}
+
+	// Determine if any service requires a build (source deployment).
+	hasBuild := false
+	for _, svc := range services {
+		if svc.Build != nil {
+			hasBuild = true
+			break
+		}
+	}
+
+	// Emit progress stages so server_api can drive the per-server instance FSM.
+	if hasBuild {
+		c.emitDeploymentProgress(ctx, ep.JobID, dep.ID, dep.Version, "building", fmt.Sprintf("building image(s) for %s v%d", dep.Slug, dep.Version))
+	} else {
+		c.emitDeploymentProgress(ctx, ep.JobID, dep.ID, dep.Version, "pulling", fmt.Sprintf("pulling image(s) for %s v%d", dep.Slug, dep.Version))
+	}
+
 	result, err := r.Execute(ctx, graph)
 	if err != nil {
 		c.logger.Error("deployment execution failed",
@@ -381,6 +445,9 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 		c.emitDeploymentResult(ctx, ep.JobID, dep.ID, dep.Version, false, err.Error(), "")
 		return
 	}
+
+	// Emit starting stage — run completed, container(s) are starting up.
+	c.emitDeploymentProgress(ctx, ep.JobID, dep.ID, dep.Version, "starting", fmt.Sprintf("starting container(s) for %s v%d", dep.Slug, dep.Version))
 
 	c.logger.Info("deployment completed",
 		"deployment_id", dep.ID,
@@ -423,6 +490,27 @@ func (c *EventSubscriberComponent) processDeploymentDelete(ctx context.Context, 
 	}
 
 	c.logger.Info("deployment containers stopped", "slug", ep.Slug)
+}
+
+// emitDeploymentProgress emits a deployments.progress event through the kernel
+// so server_api can update the per-server instance FSM and log the stage.
+func (c *EventSubscriberComponent) emitDeploymentProgress(ctx context.Context, jobID, deploymentID string, version int, stage, message string) {
+	progressPayload := map[string]interface{}{
+		"job_id":        jobID,
+		"deployment_id": deploymentID,
+		"version":       version,
+		"stage":         stage,
+		"message":       message,
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := c.syscallClient.EmitDeploymentEvent(ctx, "deployments.progress", deploymentID, progressPayload); err != nil {
+		c.logger.Warn("failed to emit deployment progress event",
+			"deployment_id", deploymentID,
+			"job_id", jobID,
+			"stage", stage,
+			"error", err,
+		)
+	}
 }
 
 // emitDeploymentResult emits a deployments.result event through the kernel so the
