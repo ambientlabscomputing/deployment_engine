@@ -2,6 +2,7 @@ package runner
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ambientlabscomputing/deployment_engine/internal/compiler"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobynetwork "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -72,6 +74,29 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 		DeploymentID: graph.DeploymentID,
 		Status:       "running",
 		Output:       make(map[string]interface{}),
+	}
+
+	// Create named Docker volumes declared in the deployment spec. VolumeCreate is
+	// idempotent — if a volume already exists with the same name Docker returns it
+	// unchanged, so redeploying the same app never wipes data.
+	for volName, vol := range graph.Volumes {
+		dockerVolName := fmt.Sprintf("%s_%s", graph.Slug, volName)
+		driver := vol.Driver
+		if driver == "" {
+			driver = "local"
+		}
+		if _, err := r.dockerClient.VolumeCreate(ctx, client.VolumeCreateOptions{
+			Name:   dockerVolName,
+			Driver: driver,
+			Labels: map[string]string{
+				"underleaf.deployment_id": graph.DeploymentID,
+				"underleaf.slug":          graph.Slug,
+			},
+		}); err != nil {
+			r.logger.Warn("failed to create volume, continuing without it", "volume", dockerVolName, "error", err)
+		} else {
+			r.logger.Info("volume ready", "volume", dockerVolName)
+		}
 	}
 
 	// Execute services in topological order
@@ -146,7 +171,31 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 			}
 		}
 
-		// Remove any existing container with the same name (idempotent redeploy)
+		// Build volume binds: "slugName_volumeName:/container/path"
+		// VolumeMounts entries are in "volumeName:/container/path" format as declared
+		// in deploy.yaml. Named volumes survive container removal and redeploys.
+		var binds []string
+		for _, mountSpec := range svc.VolumeMounts {
+			parts := strings.SplitN(mountSpec, ":", 2)
+			if len(parts) != 2 {
+				r.logger.Warn("invalid volume mount spec, skipping", "spec", mountSpec)
+				continue
+			}
+			volName := parts[0]
+			containerPath := parts[1]
+			if _, ok := graph.Volumes[volName]; ok {
+				// Named volume defined in deployment spec — use namespaced Docker volume.
+				dockerVolName := fmt.Sprintf("%s_%s", graph.Slug, volName)
+				binds = append(binds, fmt.Sprintf("%s:%s", dockerVolName, containerPath))
+			} else {
+				// Not a declared volume — treat as a host bind mount as-is.
+				binds = append(binds, mountSpec)
+			}
+		}
+
+		// Remove any existing container with the same name (idempotent redeploy).
+		// ContainerRemoveOptions does NOT set RemoveVolumes — volumes are intentionally
+		// preserved across redeployments so data is not lost.
 		_, _ = r.dockerClient.ContainerRemove(ctx, containerName, client.ContainerRemoveOptions{Force: true})
 
 		// Create container
@@ -164,6 +213,7 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 				},
 			},
 			HostConfig: &mobycontainer.HostConfig{
+				Binds:        binds,
 				PortBindings: portBindings,
 				RestartPolicy: mobycontainer.RestartPolicy{
 					Name: mobycontainer.RestartPolicyUnlessStopped,
@@ -200,6 +250,32 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 			return result, errors.New(errMsg)
 		}
 
+		// Stability check: wait briefly then inspect to catch immediate crashes
+		// (bad entrypoint, missing config, OOM, etc.) before reporting success.
+		time.Sleep(3 * time.Second)
+		inspectResult, inspectErr := r.dockerClient.ContainerInspect(ctx, resp.ID, client.ContainerInspectOptions{})
+		if inspectErr == nil && inspectResult.Container.State != nil && !inspectResult.Container.State.Running {
+			// Container exited immediately — collect its logs for diagnostics.
+			logs := r.containerTailLogs(ctx, resp.ID, 20)
+			exitCode := inspectResult.Container.State.ExitCode
+			errMsg := fmt.Sprintf("container %s exited immediately (exit code %d):\n%s", containerName, exitCode, logs)
+			r.logger.Error("container exited immediately after start",
+				"name", containerName,
+				"container_id", resp.ID,
+				"exit_code", exitCode,
+				"logs", logs,
+			)
+			result.Output[name] = map[string]interface{}{
+				"image":        imageRef,
+				"container_id": resp.ID,
+				"status":       "failed",
+				"error":        errMsg,
+			}
+			result.Status = "failed"
+			result.Error = errMsg
+			return result, errors.New(errMsg)
+		}
+
 		result.Output[name] = map[string]interface{}{
 			"image":        imageRef,
 			"container_id": resp.ID,
@@ -211,6 +287,24 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 	result.Status = "completed"
 	r.logger.Info("deployment execution completed", "id", graph.DeploymentID)
 	return result, nil
+}
+
+// containerTailLogs fetches the last n lines of stdout+stderr from a container.
+// Used to surface crash diagnostics when a container exits immediately after start.
+func (r *Runner) containerTailLogs(ctx context.Context, containerID string, lines int) string {
+	logsResult, err := r.dockerClient.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       fmt.Sprintf("%d", lines),
+	})
+	if err != nil {
+		return fmt.Sprintf("(could not retrieve logs: %v)", err)
+	}
+	defer logsResult.Close()
+
+	var buf bytes.Buffer
+	_, _ = stdcopy.StdCopy(&buf, &buf, logsResult)
+	return strings.TrimSpace(buf.String())
 }
 
 // buildImage downloads the source archive and builds a Docker image from it.

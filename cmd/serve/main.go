@@ -447,7 +447,10 @@ func (c *EventSubscriberComponent) processDeployment(ctx context.Context, payloa
 	}
 
 	// Emit starting stage — run completed, container(s) are starting up.
+	// The stability check inside Execute() already waited 3s and verified the
+	// container is still running, so we can also emit "deployed" here.
 	c.emitDeploymentProgress(ctx, ep.JobID, dep.ID, dep.Version, "starting", fmt.Sprintf("starting container(s) for %s v%d", dep.Slug, dep.Version))
+	c.emitDeploymentProgress(ctx, ep.JobID, dep.ID, dep.Version, "deployed", fmt.Sprintf("container(s) running for %s v%d", dep.Slug, dep.Version))
 
 	c.logger.Info("deployment completed",
 		"deployment_id", dep.ID,
