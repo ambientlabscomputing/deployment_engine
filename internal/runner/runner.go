@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -56,6 +57,8 @@ func (r *Runner) Ping(ctx context.Context) error {
 	_, err := r.dockerClient.Ping(ctx, client.PingOptions{})
 	return err
 }
+
+func int64Ptr(v int64) *int64 { return &v }
 
 // Execute runs a compiled deployment graph
 func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*ExecutionResult, error) {
@@ -167,7 +170,12 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 					continue
 				}
 				exposedPorts[containerPort] = struct{}{}
-				portBindings[containerPort] = []mobynetwork.PortBinding{{HostPort: hostPort}}
+				// Bind to localhost only — containers are exposed externally via
+				// Hyphae tunnel, not direct host port bindings.
+				portBindings[containerPort] = []mobynetwork.PortBinding{{
+					HostIP:   netip.MustParseAddr("127.0.0.1"),
+					HostPort: hostPort,
+				}}
 			}
 		}
 
@@ -188,8 +196,10 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 				dockerVolName := fmt.Sprintf("%s_%s", graph.Slug, volName)
 				binds = append(binds, fmt.Sprintf("%s:%s", dockerVolName, containerPath))
 			} else {
-				// Not a declared volume — treat as a host bind mount as-is.
-				binds = append(binds, mountSpec)
+				// Not a declared volume — reject host bind mounts for security.
+				// Only named volumes from the deployment spec are allowed.
+				r.logger.Warn("host bind mount rejected (not a declared volume)",
+					"spec", mountSpec, "deployment_id", graph.DeploymentID)
 			}
 		}
 
@@ -217,6 +227,20 @@ func (r *Runner) Execute(ctx context.Context, graph *compiler.CompiledGraph) (*E
 				PortBindings: portBindings,
 				RestartPolicy: mobycontainer.RestartPolicy{
 					Name: mobycontainer.RestartPolicyUnlessStopped,
+				},
+				// Security hardening: drop all capabilities and add back only
+				// the minimum set needed for typical web services.
+				CapDrop: []string{"ALL"},
+				CapAdd:  []string{"NET_BIND_SERVICE"},
+				Resources: mobycontainer.Resources{
+					Memory:    512 * 1024 * 1024, // 512 MB
+					NanoCPUs:  1_000_000_000,     // 1.0 CPU
+					PidsLimit: int64Ptr(256),
+				},
+				ReadonlyRootfs: true,
+				// Provide a writable /tmp via tmpfs for apps that need scratch space.
+				Tmpfs: map[string]string{
+					"/tmp": "rw,noexec,nosuid,size=64m",
 				},
 			},
 		})
@@ -459,13 +483,18 @@ func tarDirectory(dir string) (io.ReadCloser, error) {
 	return pr, nil
 }
 
-// extractTarGzStripped extracts a gzip-compressed tar into dst, stripping the// first (top-level) path component — which is how GitHub archives are structured.
+// extractTarGzStripped extracts a gzip-compressed tar into dst, stripping the
+// first (top-level) path component — which is how GitHub archives are structured.
+// Includes Zip Slip protection: rejects paths that escape the destination directory.
 func extractTarGzStripped(r io.Reader, dst string) error {
 	gr, err := gzip.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("not a valid gzip stream: %w", err)
 	}
 	defer gr.Close()
+
+	const maxExtractedBytes = 500 << 20 // 500 MB total extraction limit
+	var totalWritten int64
 
 	tr := tar.NewReader(gr)
 	for {
@@ -484,7 +513,16 @@ func extractTarGzStripped(r io.Reader, dst string) error {
 		}
 		relPath := parts[1]
 
-		target := path.Join(dst, relPath)
+		// ── Zip Slip protection: resolve and verify target is inside dst ──
+		target := filepath.Join(dst, filepath.FromSlash(relPath))
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return fmt.Errorf("cannot resolve path %s: %w", target, err)
+		}
+		absDst, _ := filepath.Abs(dst)
+		if !strings.HasPrefix(absTarget, absDst+string(os.PathSeparator)) && absTarget != absDst {
+			return fmt.Errorf("illegal path in archive (path traversal): %s", hdr.Name)
+		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -492,19 +530,33 @@ func extractTarGzStripped(r io.Reader, dst string) error {
 				return fmt.Errorf("mkdir %s: %w", target, err)
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(path.Dir(target), 0750); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 				return fmt.Errorf("mkdir parent of %s: %w", target, err)
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode()&0755)
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", target, err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return fmt.Errorf("write file %s: %w", target, err)
-			}
+			written, copyErr := io.Copy(f, io.LimitReader(tr, maxExtractedBytes-totalWritten+1))
 			f.Close()
+			if copyErr != nil {
+				return fmt.Errorf("write file %s: %w", target, copyErr)
+			}
+			totalWritten += written
+			if totalWritten > maxExtractedBytes {
+				return fmt.Errorf("archive exceeds maximum extracted size (%d bytes)", maxExtractedBytes)
+			}
 		case tar.TypeSymlink:
+			// Validate symlink target stays within extraction root.
+			// Absolute symlinks are always rejected — they can point anywhere.
+			if filepath.IsAbs(hdr.Linkname) {
+				return fmt.Errorf("illegal symlink in archive (absolute target): %s -> %s", hdr.Name, hdr.Linkname)
+			}
+			linkTarget := filepath.Join(filepath.Dir(target), hdr.Linkname)
+			absLink, _ := filepath.Abs(linkTarget)
+			if !strings.HasPrefix(absLink, absDst+string(os.PathSeparator)) {
+				return fmt.Errorf("illegal symlink in archive (escapes root): %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("symlink %s: %w", target, err)
 			}

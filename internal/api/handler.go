@@ -10,6 +10,9 @@ import (
 	"github.com/ambientlabscomputing/deployment_engine/internal/syscall"
 )
 
+// maxRequestBodyBytes limits request body size to prevent OOM from oversized payloads.
+const maxRequestBodyBytes = 1 << 20 // 1 MB
+
 // Handler handles HTTP API requests for deployment operations
 type Handler struct {
 	syscallClient *syscall.Client
@@ -97,6 +100,7 @@ func (h *Handler) handleSupervisorUMC(w http.ResponseWriter, r *http.Request) {
 		Port int    `json:"port"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -183,6 +187,7 @@ func (h *Handler) handleCreateDeployment(w http.ResponseWriter, r *http.Request)
 		Spec map[string]interface{} `json:"spec"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -238,6 +243,7 @@ func (h *Handler) handleSupervisorUMCRestart(w http.ResponseWriter, r *http.Requ
 		Name string `json:"name"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -274,6 +280,7 @@ func (h *Handler) handleSupervisorUMCInstall(w http.ResponseWriter, r *http.Requ
 		Checksum    string `json:"checksum"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -286,6 +293,11 @@ func (h *Handler) handleSupervisorUMCInstall(w http.ResponseWriter, r *http.Requ
 
 	if req.ArtifactURL == "" {
 		http.Error(w, "artifact_url is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Checksum == "" {
+		http.Error(w, "checksum is required", http.StatusBadRequest)
 		return
 	}
 
@@ -314,6 +326,7 @@ func (h *Handler) handleSupervisorUMCPolicy(w http.ResponseWriter, r *http.Reque
 		Policy string `json:"policy"`
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return

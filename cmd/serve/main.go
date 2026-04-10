@@ -331,14 +331,28 @@ func (c *EventSubscriberComponent) Start(ctx context.Context) error {
 								c.logger.Error("failed to marshal event payload", "error", err)
 								continue
 							}
-							go c.processDeployment(ctx, payloadBytes)
+							go func() {
+								defer func() {
+									if r := recover(); r != nil {
+										c.logger.Error("panic in processDeployment", "recover", r)
+									}
+								}()
+								c.processDeployment(ctx, payloadBytes)
+							}()
 						} else if event.EventType == "deployments.delete.server.request" {
 							payloadBytes, err := json.Marshal(event.Payload.AsMap())
 							if err != nil {
 								c.logger.Error("failed to marshal delete event payload", "error", err)
 								continue
 							}
-							go c.processDeploymentDelete(ctx, payloadBytes)
+							go func() {
+								defer func() {
+									if r := recover(); r != nil {
+										c.logger.Error("panic in processDeploymentDelete", "recover", r)
+									}
+								}()
+								c.processDeploymentDelete(ctx, payloadBytes)
+							}()
 						}
 					}
 				}

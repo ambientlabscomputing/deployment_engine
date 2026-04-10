@@ -9,12 +9,52 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
+
+// validUMCName matches alphanumeric names with optional hyphens (no path separators).
+var validUMCName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9\-]*$`)
+
+// validateUMCName rejects names that could cause path traversal or shell injection.
+func validateUMCName(name string) error {
+	if name == "" {
+		return fmt.Errorf("UMC name is empty")
+	}
+	if !validUMCName.MatchString(name) {
+		return fmt.Errorf("invalid UMC name %q: must be alphanumeric with optional hyphens", name)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("UMC name too long: max 64 characters")
+	}
+	return nil
+}
+
+// sanitizedEnv returns a clean environment for child processes, carrying over
+// only safe variables and adding the required KERNEL_SOCKET and LOG_LEVEL.
+func sanitizedEnv(kernelSocket, logLevel string) []string {
+	// Allowlist of environment variables safe to inherit.
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "USER": true, "LANG": true,
+		"TERM": true, "TMPDIR": true, "TZ": true,
+		"XDG_RUNTIME_DIR": true, "DOCKER_HOST": true,
+	}
+	var env []string
+	for _, e := range os.Environ() {
+		key, _, _ := strings.Cut(e, "=")
+		if allowed[key] {
+			env = append(env, e)
+		}
+	}
+	env = append(env, "KERNEL_SOCKET="+kernelSocket, "LOG_LEVEL="+logLevel)
+	return env
+}
 
 // RestartPolicy defines how a UMC should be restarted on failure
 type RestartPolicy string
@@ -79,6 +119,13 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 
 // StartUMC starts a managed UMC by name (e.g., "cron-engine")
 func (s *Supervisor) StartUMC(ctx context.Context, umcName string, port int) error {
+	if err := validateUMCName(umcName); err != nil {
+		return err
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port %d: must be 1-65535", port)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -93,12 +140,9 @@ func (s *Supervisor) StartUMC(ctx context.Context, umcName string, port int) err
 		return fmt.Errorf("UMC executable not found for %s", umcName)
 	}
 
-	// Prepare command
+	// Prepare command with sanitized environment
 	cmd := exec.CommandContext(ctx, exePath)
-	cmd.Env = append(os.Environ(),
-		"KERNEL_SOCKET="+s.config.KernelSocket,
-		"LOG_LEVEL="+s.config.LogLevel,
-	)
+	cmd.Env = sanitizedEnv(s.config.KernelSocket, s.config.LogLevel)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -124,9 +168,13 @@ func (s *Supervisor) StartUMC(ctx context.Context, umcName string, port int) err
 
 	// Write PID file for cron-engine so parent UA can track it for cleanup
 	if umcName == "cron-engine" {
-		pidFile := "/tmp/cron_engine.pid"
-		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
-			s.logger.Warn("failed to write cron engine PID file", "error", err)
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			pidDir := filepath.Join(homeDir, ".underleaf", "run")
+			_ = os.MkdirAll(pidDir, 0700)
+			pidFile := filepath.Join(pidDir, "cron_engine.pid")
+			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0600); err != nil {
+				s.logger.Warn("failed to write cron engine PID file", "error", err)
+			}
 		}
 	}
 
@@ -307,8 +355,27 @@ func (s *Supervisor) SetRestartPolicy(umcName string, policy RestartPolicy) erro
 	return nil
 }
 
-// InstallUMC downloads and installs a UMC binary from a URL
+// InstallUMC downloads and installs a UMC binary from a URL.
+// Requires HTTPS and a non-empty SHA-256 checksum.
 func (s *Supervisor) InstallUMC(umcName, artifactURL, checksum string) error {
+	// ── Input validation ───────────────────────────────────────────────
+	if err := validateUMCName(umcName); err != nil {
+		return err
+	}
+
+	parsed, err := url.Parse(artifactURL)
+	if err != nil {
+		return fmt.Errorf("invalid artifact URL: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("artifact URL must use HTTPS (got %q)", parsed.Scheme)
+	}
+
+	if checksum == "" {
+		return fmt.Errorf("checksum is required for binary installation")
+	}
+
+	// ── Prepare paths ──────────────────────────────────────────────────
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
@@ -325,8 +392,8 @@ func (s *Supervisor) InstallUMC(umcName, artifactURL, checksum string) error {
 
 	s.logger.Info("Downloading UMC binary", "name", umcName, "url", artifactURL)
 
-	// Download the binary
-	resp, err := http.Get(artifactURL)
+	// ── Download ───────────────────────────────────────────────────────
+	resp, err := http.Get(artifactURL) //nolint:gosec // URL scheme validated above
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
@@ -336,20 +403,15 @@ func (s *Supervisor) InstallUMC(umcName, artifactURL, checksum string) error {
 		return fmt.Errorf("download failed with status: %s", resp.Status)
 	}
 
-	// Create temp file
+	// ── Write to temp file while computing SHA-256 ─────────────────────
 	tempFile, err := os.Create(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer os.Remove(tempPath)
 
-	// Copy and compute checksum if provided
-	var hash hash.Hash
-	var writer io.Writer = tempFile
-	if checksum != "" {
-		hash = sha256.New()
-		writer = io.MultiWriter(tempFile, hash)
-	}
+	var h hash.Hash = sha256.New()
+	writer := io.MultiWriter(tempFile, h)
 
 	if _, err := io.Copy(writer, resp.Body); err != nil {
 		tempFile.Close()
@@ -360,23 +422,19 @@ func (s *Supervisor) InstallUMC(umcName, artifactURL, checksum string) error {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	// Verify checksum
-	if checksum != "" {
-		actualChecksum := hex.EncodeToString(hash.Sum(nil))
-		if actualChecksum != checksum {
-			return fmt.Errorf("checksum mismatch: expected %s, got %s", checksum, actualChecksum)
-		}
-		s.logger.Info("Checksum verified", "name", umcName, "checksum", checksum)
+	// ── Verify checksum (always) ────────────────────────────────────────
+	actualChecksum := hex.EncodeToString(h.Sum(nil))
+	if actualChecksum != checksum {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", checksum, actualChecksum)
 	}
+	s.logger.Info("Checksum verified", "name", umcName, "checksum", checksum)
 
-	// Make executable
+	// ── Make executable and atomically install ─────────────────────────
 	if err := os.Chmod(tempPath, 0755); err != nil {
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	// Atomic move (rename on same filesystem, copy+delete otherwise)
 	if err := os.Rename(tempPath, targetPath); err != nil {
-		// Try copy if rename fails (cross-device link)
 		if os.IsPermission(err) || os.IsExist(err) {
 			return fmt.Errorf("failed to install binary: %w", err)
 		}
@@ -417,7 +475,8 @@ func (s *Supervisor) copyFile(src, dst string) error {
 	return os.Chmod(dst, srcInfo.Mode())
 }
 
-// findExecutable locates the UMC binary
+// findExecutable locates the UMC binary. Uses Lstat to avoid following
+// symlinks that could redirect execution to an attacker-controlled path.
 func (s *Supervisor) findExecutable(umcName string) string {
 	homeDir, _ := os.UserHomeDir()
 	exeName := umcName + "-serve"
@@ -434,9 +493,16 @@ func (s *Supervisor) findExecutable(umcName string) string {
 	}
 
 	for _, p := range paths {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			return p
+		// Lstat does NOT follow symlinks — prevents symlink redirect attacks.
+		info, err := os.Lstat(p)
+		if err != nil || info.IsDir() {
+			continue
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			s.logger.Warn("skipping symlink in executable search", "path", p)
+			continue
+		}
+		return p
 	}
 
 	return ""
@@ -556,12 +622,9 @@ func (s *Supervisor) monitorUMC(umcName string, proc *UMCProcess) {
 			return
 		}
 
-		// Restart the process
+		// Restart the process with sanitized environment
 		cmd := exec.Command(exePath)
-		cmd.Env = append(os.Environ(),
-			"KERNEL_SOCKET="+s.config.KernelSocket,
-			"LOG_LEVEL="+s.config.LogLevel,
-		)
+		cmd.Env = sanitizedEnv(s.config.KernelSocket, s.config.LogLevel)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 

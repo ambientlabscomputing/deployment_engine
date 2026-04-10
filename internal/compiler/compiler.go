@@ -144,7 +144,9 @@ func (g *CompiledGraph) Validate() error {
 
 var secretPattern = regexp.MustCompile(`\$\{secret:([a-zA-Z0-9_\-\.\/]+)\}`)
 
-// resolveSecrets replaces ${secret:key} placeholders with actual secret values
+// resolveSecrets replaces ${secret:key} placeholders with actual secret values.
+// Returns an error if any secret cannot be resolved — partial deployments with
+// missing secrets are a security/reliability risk.
 func (c *Compiler) resolveSecrets(ctx context.Context, env map[string]string) (map[string]string, error) {
 	if c.syscallClient == nil {
 		// No syscall client available, return environment as-is
@@ -160,7 +162,11 @@ func (c *Compiler) resolveSecrets(ctx context.Context, env map[string]string) (m
 		}
 
 		// Replace all secret references in the value
+		var resolveErr error
 		resolvedValue := secretPattern.ReplaceAllStringFunc(value, func(match string) string {
+			if resolveErr != nil {
+				return match // already failed, skip remaining
+			}
 			// Extract secret key from ${secret:key}
 			submatch := secretPattern.FindStringSubmatch(match)
 			if len(submatch) < 2 {
@@ -171,13 +177,16 @@ func (c *Compiler) resolveSecrets(ctx context.Context, env map[string]string) (m
 			// Fetch secret from kernel
 			secretValue, err := c.syscallClient.GetSecret(ctx, secretKey)
 			if err != nil {
-				// Log error but don't fail - return placeholder for now
-				// TODO: Consider making this a hard failure in production
+				resolveErr = fmt.Errorf("failed to resolve secret %q for env var %q: %w", secretKey, key, err)
 				return match
 			}
 
 			return string(secretValue)
 		})
+
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 
 		resolved[key] = resolvedValue
 	}

@@ -28,6 +28,18 @@ type SourceRef struct {
 	Token      string `json:"token,omitempty"`      // GitHub PAT for private repos (github only)
 }
 
+// Redacted returns a copy with the Token field masked, safe for logging.
+func (s *SourceRef) Redacted() *SourceRef {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	if c.Token != "" {
+		c.Token = "***"
+	}
+	return &c
+}
+
 // DeploymentSpec represents a full deployment specification
 type DeploymentSpec struct {
 	ID       string                 `json:"id"`
